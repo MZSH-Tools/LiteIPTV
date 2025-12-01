@@ -23,5 +23,3 @@ tmp/
 temp/
 *.tmp
 
-# 配置文件
-config.json
