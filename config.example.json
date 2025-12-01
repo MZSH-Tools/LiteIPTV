@@ -1,0 +1,9 @@
+{
+  "sources": [
+    {
+      "name": "iptv-api",
+      "url": "https://raw.githubusercontent.com/Guovin/iptv-api/gd/output/result.m3u",
+      "enabled": true
+    }
+  ]
+}
