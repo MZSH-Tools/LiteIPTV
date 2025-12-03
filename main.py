@@ -66,7 +66,7 @@ def LoadConfig():
     """加载配置文件"""
     path = RootDir / "config.json"
     if not path.exists():
-        print("Error: config.json not found")
+        print("错误: 未找到 config.json")
         return None
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
@@ -99,11 +99,11 @@ def FetchSource(src):
             items = ParseM3U(result.stdout)
             for item in items:
                 item["source"] = name
-            print(f"Fetched {name}: {len(items)} channels")
+            print(f"已抓取 {name}: {len(items)} 个频道")
             return items
-        print(f"Fetch failed {name}: curl code {result.returncode}")
+        print(f"抓取失败 {name}: curl 返回码 {result.returncode}")
     except Exception as e:
-        print(f"Fetch error {name}: {type(e).__name__}")
+        print(f"抓取异常 {name}: {type(e).__name__}")
     return []
 
 
@@ -175,7 +175,7 @@ def TestUrlCurl(url, ipVer, timeout=5):
     return None
 
 
-async def TestUrlDualStack(url, rounds=5, interval=60):
+async def TestUrlDualStack(url, rounds=5, interval=60, timeout=2):
     """双栈测速，分别测试 IPv4 和 IPv6"""
     loop = asyncio.get_event_loop()
     v4Results, v6Results = [], []
@@ -183,8 +183,8 @@ async def TestUrlDualStack(url, rounds=5, interval=60):
     for i in range(rounds):
         if i > 0:
             await asyncio.sleep(interval)
-        v4Task = loop.run_in_executor(None, TestUrlCurl, url, 4, 5)
-        v6Task = loop.run_in_executor(None, TestUrlCurl, url, 6, 5)
+        v4Task = loop.run_in_executor(None, TestUrlCurl, url, 4, timeout)
+        v6Task = loop.run_in_executor(None, TestUrlCurl, url, 6, timeout)
         v4Time, v6Time = await asyncio.gather(v4Task, v6Task)
         if v4Time is not None:
             v4Results.append(v4Time)
@@ -195,36 +195,38 @@ async def TestUrlDualStack(url, rounds=5, interval=60):
         if not results:
             return None
         rate = len(results) / rounds
-        avg = sum(results) / len(results)
-        return {"rate": rate, "avg": avg, "score": rate / (avg + 0.1)}
+        avgMs = sum(results) / len(results) * 1000  # 转换为毫秒
+        # 评分 = 成功率 * 1000 / 平均响应时间(ms)，分数越高越好
+        score = rate * 1000 / (avgMs + 10)
+        return {"rate": rate, "avgMs": avgMs, "score": score}
 
     return {"v4": CalcScore(v4Results), "v6": CalcScore(v6Results)}
 
 
-async def SelectBestSources(chDict, rounds=5, interval=60, maxConcur=50):
+async def SelectBestSources(chDict, rounds=5, interval=60, timeout=2, maxConcur=100):
     """为每个频道选择最优源（全局并行双栈测速，限制并发数）"""
-    # 收集所有待测 URL
-    allTests = []
+    # 构建 URL -> [(chId, src), ...] 映射，实现全局去重
+    urlMap = {}  # url -> [(chId, src), ...]
     for chId, urlList in chDict.items():
-        seen = set()
         for url, src in urlList:
-            if url not in seen:
-                seen.add(url)
-                allTests.append((chId, url, src))
+            if url not in urlMap:
+                urlMap[url] = []
+            urlMap[url].append((chId, src))
 
-    if not allTests:
+    if not urlMap:
         return {}, {}, {}
 
-    print(f"Global parallel testing: {len(allTests)} URLs, {rounds} rounds, max concurrency: {maxConcur}")
+    uniqueUrls = list(urlMap.keys())
+    print(f"全局并行测速: {len(uniqueUrls)} 个唯一URL, {rounds} 轮, 超时 {timeout}秒, 并发 {maxConcur}")
 
     # 使用信号量限制并发数
     sem = asyncio.Semaphore(maxConcur)
 
-    async def TestWithLimit(url, r, i):
+    async def TestWithLimit(url, r, i, t):
         async with sem:
-            return await TestUrlDualStack(url, r, i)
+            return await TestUrlDualStack(url, r, i, t)
 
-    tasks = [TestWithLimit(url, rounds, interval) for _, url, _ in allTests]
+    tasks = [TestWithLimit(url, rounds, interval, timeout) for url in uniqueUrls]
     results = await asyncio.gather(*tasks)
 
     # 汇总结果
@@ -232,21 +234,24 @@ async def SelectBestSources(chDict, rounds=5, interval=60, maxConcur=50):
     srcStats = {}
     chScores = {ch: {"v4": (-1, None), "v6": (-1, None)} for ch in Channels}
 
-    for (chId, url, src), result in zip(allTests, results):
-        if src not in srcStats:
-            srcStats[src] = {"total": 0, "connected": 0}
-        srcStats[src]["total"] += 1
-
+    for url, result in zip(uniqueUrls, results):
         v4 = result.get("v4")
         v6 = result.get("v6")
 
-        if v4 or v6:
-            srcStats[src]["connected"] += 1
+        # 将结果分配给所有相关频道
+        for chId, src in urlMap[url]:
+            # 统计上游源连通情况
+            if src not in srcStats:
+                srcStats[src] = {"total": 0, "connected": 0}
+            srcStats[src]["total"] += 1
+            if v4 or v6:
+                srcStats[src]["connected"] += 1
 
-        if v4 and v4["score"] > chScores[chId]["v4"][0]:
-            chScores[chId]["v4"] = (v4["score"], url)
-        if v6 and v6["score"] > chScores[chId]["v6"][0]:
-            chScores[chId]["v6"] = (v6["score"], url)
+            # 更新频道最优源
+            if v4 and v4["score"] > chScores[chId]["v4"][0]:
+                chScores[chId]["v4"] = (v4["score"], url)
+            if v6 and v6["score"] > chScores[chId]["v6"][0]:
+                chScores[chId]["v6"] = (v6["score"], url)
 
     # 提取最优结果
     for chId in Channels:
@@ -257,7 +262,7 @@ async def SelectBestSources(chDict, rounds=5, interval=60, maxConcur=50):
         if v6Url:
             bestV6[chId] = v6Url
 
-    print(f"Testing complete: {len(bestV4)} IPv4, {len(bestV6)} IPv6 channels found")
+    print(f"测速完成: 找到 {len(bestV4)} 个IPv4频道, {len(bestV6)} 个IPv6频道")
 
     return bestV4, bestV6, srcStats
 
@@ -272,7 +277,7 @@ def DisableDeadSources(srcStats, cfg):
             if src.get("启用", True):
                 src["启用"] = False
                 disabled.append(name)
-                print(f"Disabled source: {name} (0/{stats['total']} connected)")
+                print(f"已禁用失效源: {name} (0/{stats['total']} 连通)")
     return disabled
 
 
@@ -316,42 +321,44 @@ def CommitAndPush():
     subprocess.run(["git", "add", "ipv4.m3u", "ipv6.m3u", "config.json"], cwd=RootDir)
     subprocess.run(["git", "commit", "-m", msg], cwd=RootDir)
     subprocess.run(["git", "push"], cwd=RootDir)
-    print(f"Pushed: {msg}")
+    print(f"已推送: {msg}")
 
 
 async def Main():
     """主函数"""
-    print(f"=== LiteIPTV Start: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===")
+    print(f"=== LiteIPTV 开始: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===")
 
     cfg = LoadConfig()
     if not cfg:
         return
 
     # 并行抓取所有上游源
-    print("--- Fetching sources ---")
+    print("--- 抓取上游源 ---")
     allItems = await FetchAllSources(cfg.get("上游源", []))
-    print(f"Total channels fetched: {len(allItems)}")
+    print(f"共抓取 {len(allItems)} 个频道")
 
     # 筛选 CCTV 频道
     chDict = FilterChannels(allItems)
     totalUrls = sum(len(urls) for urls in chDict.values())
-    print(f"CCTV channels: {totalUrls} sources")
+    print(f"筛选出 CCTV 频道: {totalUrls} 个源")
 
     # 读取测速配置
     settings = cfg.get("设置", {})
     rounds = settings.get("测速轮数", 5)
     interval = settings.get("测速间隔秒", 60)
+    timeout = settings.get("测速超时秒", 2)
+    maxConcur = settings.get("最大并发数", 100)
     autoDisable = settings.get("自动禁用失效源", True)
 
     # 快速测试模式
     if os.environ.get("QUICK_TEST"):
         rounds, interval = 1, 1
-        print("\n[Quick test mode]")
+        print("\n[快速测试模式]")
     else:
-        print(f"\n[Test config: {rounds} rounds, {interval}s interval]")
+        print(f"\n[测速配置: {rounds}轮, 间隔{interval}秒, 超时{timeout}秒, 并发{maxConcur}]")
 
-    print("\n--- Dual-stack testing ---")
-    bestV4, bestV6, srcStats = await SelectBestSources(chDict, rounds, interval)
+    print("\n--- 双栈测速 ---")
+    bestV4, bestV6, srcStats = await SelectBestSources(chDict, rounds, interval, timeout, maxConcur)
 
     # 禁用失效源
     disabled = []
@@ -365,17 +372,17 @@ async def Main():
     # 保存配置
     if disabled:
         SaveConfig(cfg)
-        print(f"Config updated: {len(disabled)} sources disabled")
+        print(f"配置已更新: 禁用了 {len(disabled)} 个失效源")
 
-    print(f"\nGenerated: ipv4.m3u ({len(bestV4)} channels), ipv6.m3u ({len(bestV6)} channels)")
+    print(f"\n生成完成: ipv4.m3u ({len(bestV4)} 个频道), ipv6.m3u ({len(bestV6)} 个频道)")
 
     # 检查变化并提交
     if HasChanges():
         CommitAndPush()
     else:
-        print("No changes detected, skip push")
+        print("无变化，跳过推送")
 
-    print(f"=== LiteIPTV End: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===")
+    print(f"=== LiteIPTV 结束: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===")
 
 
 if __name__ == "__main__":
