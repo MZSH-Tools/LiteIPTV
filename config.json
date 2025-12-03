@@ -19,7 +19,7 @@
     {
       "名称": "vbskycn-iptv4",
       "地址": "https://raw.githubusercontent.com/vbskycn/iptv/master/tv/iptv4.m3u",
-      "启用": false
+      "启用": true
     },
     {
       "名称": "vbskycn-iptv6",
