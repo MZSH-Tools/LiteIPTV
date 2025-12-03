@@ -29,16 +29,6 @@
       "启用": true
     },
     {
-      "名称": "joevess-home",
-      "地址": "https://raw.githubusercontent.com/joevess/IPTV/main/home.m3u8",
-      "启用": true
-    },
-    {
-      "名称": "joevess-iptv",
-      "地址": "https://raw.githubusercontent.com/joevess/IPTV/main/iptv.m3u8",
-      "启用": true
-    },
-    {
       "名称": "YanG-Gather",
       "地址": "https://raw.githubusercontent.com/YanG-1989/m3u/main/Gather.m3u",
       "启用": true
@@ -49,13 +39,23 @@
       "启用": true
     },
     {
-      "名称": "yuanzl77-live",
-      "地址": "https://raw.githubusercontent.com/yuanzl77/IPTV/main/live.m3u",
+      "名称": "ChinaIPTV-AutoUpdate",
+      "地址": "https://raw.githubusercontent.com/hujingguang/ChinaIPTV/main/cnTV_AutoUpdate.m3u8",
       "启用": true
     },
     {
-      "名称": "kimcrowing-index",
-      "地址": "https://raw.githubusercontent.com/kimcrowing/IPTV/main/index.m3u",
+      "名称": "zbefine-iptv",
+      "地址": "https://raw.githubusercontent.com/zbefine/iptv/main/iptv.m3u",
+      "启用": true
+    },
+    {
+      "名称": "vamoschuck-TV",
+      "地址": "https://raw.githubusercontent.com/vamoschuck/TV/main/M3U",
+      "启用": true
+    },
+    {
+      "名称": "Kimentanm-aptv",
+      "地址": "https://raw.githubusercontent.com/Kimentanm/aptv/master/m3u/iptv.m3u",
       "启用": true
     }
   ]
