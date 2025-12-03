@@ -18,14 +18,16 @@ from pathlib import Path
 RootDir = Path(__file__).parent
 
 
+# 日志目录
+LogDir = Path.home() / "Library/Logs/LiteIPTV"
+LogFile = LogDir / "LiteIPTV.log"
+
+
 def Log(msg):
-    """输出日志到终端和 macOS 控制台"""
-    print(msg)
-    # 使用 os_log 写入系统日志，可在「控制台」应用中查看
-    subprocess.run(
-        ["logger", "-t", "LiteIPTV", msg],
-        capture_output=True
-    )
+    """输出日志到终端和日志文件"""
+    print(msg, flush=True)
+    with open(LogFile, "a", encoding="utf-8") as f:
+        f.write(msg + "\n")
 
 # CCTV 频道配置
 Channels = {
@@ -293,7 +295,11 @@ def DisableDeadSources(srcStats, cfg):
 
 
 def GenerateM3U(sources, filename):
-    """生成 m3u 文件，内容相同则跳过"""
+    """生成 m3u 文件，内容相同或无源则跳过"""
+    if not sources:
+        Log(f"跳过 {filename}: 无可用源")
+        return False
+
     lines = ['#EXTM3U x-tvg-url="https://epg.112114.xyz/pp.xml"']
     for chId in Channels:
         if chId in sources:
@@ -337,6 +343,10 @@ def CommitAndPush():
 
 async def Main():
     """主函数"""
+    # 初始化日志目录并清空日志
+    LogDir.mkdir(parents=True, exist_ok=True)
+    LogFile.write_text("")
+
     Log(f"=== LiteIPTV 开始: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===")
 
     cfg = LoadConfig()
