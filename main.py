@@ -87,49 +87,6 @@ def LoadConfig():
         return json.load(f)
 
 
-async def TestProxy(proxy, testUrl, timeout=10):
-    """测试单个代理的速度，返回 (proxy, latency) 或 (proxy, None)"""
-    url = proxy + testUrl if proxy else testUrl
-    try:
-        start = time.time()
-        async with aiohttp.ClientSession(trust_env=False) as session:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=timeout), ssl=False) as resp:
-                if resp.status == 200:
-                    await resp.read()
-                    return (proxy, time.time() - start)
-    except:
-        pass
-    return (proxy, None)
-
-
-async def SelectBestProxy(proxies, testUrl):
-    """并行测试所有代理，返回最快的代理前缀"""
-    if not proxies:
-        return ""
-
-    Log("--- 测试 GitHub 代理 ---")
-    tasks = [TestProxy(p, testUrl) for p in proxies]
-    results = await asyncio.gather(*tasks)
-
-    # 过滤成功的，按延迟排序
-    valid = [(p, t) for p, t in results if t is not None]
-    if not valid:
-        Log("所有代理均不可用，使用直连")
-        return ""
-
-    valid.sort(key=lambda x: x[1])
-    best, latency = valid[0]
-
-    for p, t in results:
-        status = f"{t:.2f}s" if t else "失败"
-        mark = " ✓" if p == best else ""
-        name = p if p else "直连"
-        Log(f"  {name}: {status}{mark}")
-
-    Log(f"选择: {best if best else '直连'} ({latency:.2f}s)")
-    return best
-
-
 def SaveConfig(cfg):
     """保存配置文件，内容相同则跳过"""
     path = RootDir / "config.json"
@@ -140,17 +97,13 @@ def SaveConfig(cfg):
     return True
 
 
-def FetchSource(src, proxy, maxRetry, retryDelay):
+def FetchSource(src, maxRetry, retryDelay):
     """抓取单个上游源，失败时重试，返回 (items, success)"""
     if not src.get("启用", True):
         return [], True  # 未启用不算失败
 
     url = src["地址"]
     name = src.get("名称", url)
-
-    # GitHub raw 链接加代理前缀
-    if proxy and "raw.githubusercontent.com" in url:
-        url = proxy + url
 
     for attempt in range(maxRetry):
         try:
@@ -174,10 +127,10 @@ def FetchSource(src, proxy, maxRetry, retryDelay):
     return [], False
 
 
-async def FetchAllSources(sources, cfg, proxy, maxRetry, retryDelay, autoDisable=True):
+async def FetchAllSources(sources, cfg, maxRetry, retryDelay, autoDisable=True):
     """并行抓取所有上游源，抓取失败的源自动禁用"""
     loop = asyncio.get_event_loop()
-    tasks = [loop.run_in_executor(None, FetchSource, src, proxy, maxRetry, retryDelay) for src in sources]
+    tasks = [loop.run_in_executor(None, FetchSource, src, maxRetry, retryDelay) for src in sources]
     results = await asyncio.gather(*tasks)
 
     allItems = []
@@ -227,13 +180,30 @@ def MatchChannel(name):
     return None
 
 
-def FilterChannels(allItems):
+def IsBlacklisted(url, blacklist):
+    """检查 URL 是否在黑名单中"""
+    for pattern in blacklist:
+        if pattern in url:
+            return True
+    return False
+
+
+def FilterChannels(allItems, blacklist=None):
     """筛选 CCTV 频道，返回 {chId: [(url, source), ...]}"""
+    if blacklist is None:
+        blacklist = []
     result = {ch: [] for ch in Channels}
+    blacklisted = 0
     for item in allItems:
+        url = item["url"]
+        if IsBlacklisted(url, blacklist):
+            blacklisted += 1
+            continue
         chId = MatchChannel(item["name"])
         if chId:
-            result[chId].append((item["url"], item.get("source", "unknown")))
+            result[chId].append((url, item.get("source", "unknown")))
+    if blacklisted > 0:
+        Log(f"黑名单过滤: {blacklisted} 个源")
     return result
 
 
@@ -311,14 +281,46 @@ def ParseM3u8Segments(content, baseUrl):
 
 
 async def QuickConnectCheck(url, ipVer):
-    """快速连通性检查（真异步，只获取 m3u8 内容）"""
+    """连通性检查：验证 m3u8 和首个 ts 分片都可访问"""
     content = await AioFetch(url, ipVer, timeout=5)
     if not content:
         return False, None
-    # 简单验证是否是有效的 m3u8
-    if "#EXTINF" in content or "#EXT-X-STREAM-INF" in content:
-        return True, content
-    return False, None
+
+    # 检查是否是 Master Playlist
+    if "#EXT-X-STREAM-INF" in content:
+        # 解析第一个子播放列表
+        lines = content.strip().split("\n")
+        for i, line in enumerate(lines):
+            if "#EXT-X-STREAM-INF" in line and i + 1 < len(lines):
+                subUrl = lines[i + 1].strip()
+                if not subUrl.startswith("http"):
+                    from urllib.parse import urljoin
+                    subUrl = urljoin(url, subUrl)
+                content = await AioFetch(subUrl, ipVer, timeout=5)
+                if not content:
+                    return False, None
+                break
+
+    # 验证是否有分片
+    if "#EXTINF" not in content:
+        return False, None
+
+    # 解析并验证 ts 分片可下载
+    segments = ParseM3u8Segments(content, url)
+    if not segments:
+        return False, None
+
+    # 下载前 3 个分片验证可用性
+    testSegs = segments[:3]
+    tasks = [AioDownload(seg, ipVer, timeout=10) for seg in testSegs]
+    results = await asyncio.gather(*tasks)
+    successCount = sum(1 for r in results if r and r["bytes"] >= 1000)
+
+    # 至少 2 个分片成功才算可用
+    if successCount < 2:
+        return False, None
+
+    return True, content
 
 
 async def TestUrl(url, ipVer, timeout=30):
@@ -653,18 +655,14 @@ async def RunOnce():
         autoDisable = False  # 快速测试不禁用源
         Log("[快速测试模式]\n")
 
-    # 测试 GitHub 代理并选择最快的
-    proxies = cfg.get("GitHub代理", [""])
-    testUrl = "https://raw.githubusercontent.com/YanG-1989/m3u/main/Gather.m3u"
-    proxy = await SelectBestProxy(proxies, testUrl)
-
     # 并行抓取所有上游源
     Log("--- 抓取上游源 ---")
-    allItems = await FetchAllSources(cfg.get("上游源", []), cfg, proxy, maxRetry, retryDelay, autoDisable)
+    allItems = await FetchAllSources(cfg.get("上游源", []), cfg, maxRetry, retryDelay, autoDisable)
     Log(f"共抓取 {len(allItems)} 个频道")
 
-    # 筛选 CCTV 频道
-    chDict = FilterChannels(allItems)
+    # 筛选 CCTV 频道（排除黑名单）
+    blacklist = cfg.get("黑名单", [])
+    chDict = FilterChannels(allItems, blacklist)
     totalUrls = sum(len(urls) for urls in chDict.values())
     uniqueUrls = len(set(url for urls in chDict.values() for url, _ in urls))
     Log(f"筛选出 CCTV 频道: {totalUrls} 个源 ({uniqueUrls} 个唯一)")
