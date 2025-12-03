@@ -8,7 +8,7 @@
     "测速超时秒": 30,
     "最大并发数": 500,
     "自动禁用失效源": true,
-    "分辨率检测": false
+    "分辨率检测": true
   },
   "GitHub代理": [
     "",
@@ -46,12 +46,12 @@
     {
       "名称": "suxuang-ipv6",
       "地址": "https://raw.githubusercontent.com/suxuang/myIPTV/main/ipv6.m3u",
-      "启用": true
+      "启用": false
     },
     {
       "名称": "yuanzl77-live",
       "地址": "https://raw.githubusercontent.com/yuanzl77/IPTV/main/live.m3u",
-      "启用": true
+      "启用": false
     }
   ]
 }
