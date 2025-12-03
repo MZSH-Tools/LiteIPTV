@@ -87,6 +87,49 @@ def LoadConfig():
         return json.load(f)
 
 
+async def TestProxy(proxy, testUrl, timeout=10):
+    """测试单个代理的速度，返回 (proxy, latency) 或 (proxy, None)"""
+    url = proxy + testUrl if proxy else testUrl
+    try:
+        start = time.time()
+        async with aiohttp.ClientSession(trust_env=False) as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=timeout), ssl=False) as resp:
+                if resp.status == 200:
+                    await resp.read()
+                    return (proxy, time.time() - start)
+    except:
+        pass
+    return (proxy, None)
+
+
+async def SelectBestProxy(proxies, testUrl):
+    """并行测试所有代理，返回最快的代理前缀"""
+    if not proxies:
+        return ""
+
+    Log("--- 测试 GitHub 代理 ---")
+    tasks = [TestProxy(p, testUrl) for p in proxies]
+    results = await asyncio.gather(*tasks)
+
+    # 过滤成功的，按延迟排序
+    valid = [(p, t) for p, t in results if t is not None]
+    if not valid:
+        Log("所有代理均不可用，使用直连")
+        return ""
+
+    valid.sort(key=lambda x: x[1])
+    best, latency = valid[0]
+
+    for p, t in results:
+        status = f"{t:.2f}s" if t else "失败"
+        mark = " ✓" if p == best else ""
+        name = p if p else "直连"
+        Log(f"  {name}: {status}{mark}")
+
+    Log(f"选择: {best if best else '直连'} ({latency:.2f}s)")
+    return best
+
+
 def SaveConfig(cfg):
     """保存配置文件，内容相同则跳过"""
     path = RootDir / "config.json"
@@ -97,13 +140,17 @@ def SaveConfig(cfg):
     return True
 
 
-def FetchSource(src, maxRetry, retryDelay):
+def FetchSource(src, proxy, maxRetry, retryDelay):
     """抓取单个上游源，失败时重试，返回 (items, success)"""
     if not src.get("启用", True):
         return [], True  # 未启用不算失败
 
     url = src["地址"]
     name = src.get("名称", url)
+
+    # GitHub raw 链接加代理前缀
+    if proxy and "raw.githubusercontent.com" in url:
+        url = proxy + url
 
     for attempt in range(maxRetry):
         try:
@@ -127,10 +174,10 @@ def FetchSource(src, maxRetry, retryDelay):
     return [], False
 
 
-async def FetchAllSources(sources, cfg, maxRetry, retryDelay):
+async def FetchAllSources(sources, cfg, proxy, maxRetry, retryDelay, autoDisable=True):
     """并行抓取所有上游源，抓取失败的源自动禁用"""
     loop = asyncio.get_event_loop()
-    tasks = [loop.run_in_executor(None, FetchSource, src, maxRetry, retryDelay) for src in sources]
+    tasks = [loop.run_in_executor(None, FetchSource, src, proxy, maxRetry, retryDelay) for src in sources]
     results = await asyncio.gather(*tasks)
 
     allItems = []
@@ -138,7 +185,7 @@ async def FetchAllSources(sources, cfg, maxRetry, retryDelay):
     for src, (items, success) in zip(sources, results):
         allItems.extend(items)
         # 抓取失败则禁用
-        if not success and src.get("启用", True):
+        if autoDisable and not success and src.get("启用", True):
             src["启用"] = False
             disabled.append(src.get("名称", src["地址"]))
             Log(f"已禁用抓取失败源: {src.get('名称', src['地址'])}")
@@ -263,121 +310,6 @@ def ParseM3u8Segments(content, baseUrl):
     return segments
 
 
-def ParseM3u8Resolution(content):
-    """从 m3u8 内容解析分辨率"""
-    # 匹配 RESOLUTION=1920x1080 格式
-    match = re.search(r'RESOLUTION=(\d+)x(\d+)', content)
-    if match:
-        return int(match.group(1)), int(match.group(2))
-    return None, None
-
-
-def DetectResolutionFfprobe(tsUrl, ipVer):
-    """使用 ffprobe 检测 ts 分片分辨率（强制裸连，不使用代理）"""
-    flag = "-4" if ipVer == 4 else "-6"
-    try:
-        # 使用 curl 下载分片到临时文件
-        import tempfile
-        with tempfile.NamedTemporaryFile(suffix=".ts", delete=False) as tmp:
-            tmpPath = tmp.name
-
-        result = subprocess.run(
-            ["curl", flag, "-s", "-L", "--noproxy", "*", "--max-time", "10", "-o", tmpPath, tsUrl],
-            capture_output=True
-        )
-        if result.returncode != 0:
-            return None, None
-
-        # 使用 ffprobe 检测分辨率
-        result = subprocess.run(
-            ["ffprobe", "-v", "error", "-select_streams", "v:0",
-             "-show_entries", "stream=width,height", "-of", "csv=p=0", tmpPath],
-            capture_output=True, text=True
-        )
-
-        # 清理临时文件
-        import os
-        os.unlink(tmpPath)
-
-        if result.returncode == 0 and result.stdout.strip():
-            parts = result.stdout.strip().split(",")
-            if len(parts) == 2:
-                return int(parts[0]), int(parts[1])
-    except:
-        pass
-    return None, None
-
-
-def Is1080p(width, height):
-    """判断是否为 1080p（高度 >= 1080）"""
-    if width and height:
-        return height >= 1080
-    return False
-
-
-async def CheckResolution(url, ipVer, cachedContent=None, debug=False):
-    """检查 URL 分辨率，返回 (is1080p, width, height, reason)"""
-    # 直播流分片会过期，必须重新获取最新 m3u8
-    content = await AioFetch(url, ipVer, timeout=10)
-    if not content:
-        if debug:
-            Log(f"  [DEBUG] {url[:50]}... fetch_failed")
-        return False, None, None, "fetch_failed"
-
-    # 检查是否是 Master Playlist（包含 EXT-X-STREAM-INF）
-    if "#EXT-X-STREAM-INF" in content:
-        # 解析最高分辨率的子播放列表
-        bestRes, bestUrl = 0, None
-        lines = content.strip().split("\n")
-        for i, line in enumerate(lines):
-            if "#EXT-X-STREAM-INF" in line:
-                match = re.search(r'RESOLUTION=(\d+)x(\d+)', line)
-                if match and i + 1 < len(lines):
-                    w, h = int(match.group(1)), int(match.group(2))
-                    res = w * h
-                    if res > bestRes:
-                        bestRes = res
-                        subUrl = lines[i + 1].strip()
-                        if subUrl.startswith("http"):
-                            bestUrl = subUrl
-                        elif subUrl.startswith("/"):
-                            from urllib.parse import urlparse
-                            parsed = urlparse(url)
-                            bestUrl = f"{parsed.scheme}://{parsed.netloc}{subUrl}"
-                        else:
-                            from urllib.parse import urljoin
-                            bestUrl = urljoin(url, subUrl)
-        if bestUrl:
-            content = await AioFetch(bestUrl, ipVer, timeout=10)
-            if not content:
-                return False, None, None, "sub_fetch_failed"
-            url = bestUrl
-
-    # 尝试从 m3u8 解析分辨率
-    width, height = ParseM3u8Resolution(content)
-
-    # 解析分片
-    segments = ParseM3u8Segments(content, url)
-    if not segments:
-        return False, None, None, "no_segments"
-
-    # 如果 m3u8 没有分辨率信息，用 ffprobe 检测第一个分片
-    if not width or not height:
-        if debug:
-            Log(f"  [DEBUG] {url[:50]}... no m3u8 res, trying ffprobe on {segments[0][:50]}...")
-        loop = asyncio.get_event_loop()
-        width, height = await loop.run_in_executor(None, DetectResolutionFfprobe, segments[0], ipVer)
-
-    if not width or not height:
-        if debug:
-            Log(f"  [DEBUG] {url[:50]}... detect_failed (w={width}, h={height})")
-        return False, None, None, "detect_failed"
-
-    if debug:
-        Log(f"  [DEBUG] {url[:50]}... {width}x{height}")
-    return Is1080p(width, height), width, height, "ok"
-
-
 async def QuickConnectCheck(url, ipVer):
     """快速连通性检查（真异步，只获取 m3u8 内容）"""
     content = await AioFetch(url, ipVer, timeout=5)
@@ -387,89 +319,6 @@ async def QuickConnectCheck(url, ipVer):
     if "#EXTINF" in content or "#EXT-X-STREAM-INF" in content:
         return True, content
     return False, None
-
-
-async def FilterByResolution(urls, maxConcur=500):
-    """两阶段筛选：先连通性检查，再检测分辨率（真异步）"""
-    Log(f"--- 分辨率预检 ---")
-    Log(f"第一阶段: 连通性检查 ({len(urls)} 个 URL)...")
-
-    results = {}
-    connectable = {}  # url -> {v4: content, v6: content}
-    urlList = list(urls)
-
-    # 第一阶段：真异步连通性检查
-    sem = asyncio.Semaphore(maxConcur)
-
-    async def checkOne(url, ipVer):
-        async with sem:
-            return await QuickConnectCheck(url, ipVer)
-
-    # 构建所有任务
-    tasks = []
-    for url in urlList:
-        tasks.append(checkOne(url, 4))
-        tasks.append(checkOne(url, 6))
-
-    Log(f"  并发检查 {len(urlList)} 个 URL (IPv4+IPv6)...")
-    allResults = await asyncio.gather(*tasks)
-
-    # 解析结果
-    for i, url in enumerate(urlList):
-        v4Ok, v4Content = allResults[i * 2]
-        v6Ok, v6Content = allResults[i * 2 + 1]
-        if v4Ok or v6Ok:
-            connectable[url] = {"v4": v4Content, "v6": v6Content}
-        results[url] = {"v4": False, "v6": False}
-
-    Log(f"  可连接源: {len(connectable)} 个")
-
-    if not connectable:
-        Log(f"1080p 源: IPv4 0 个, IPv6 0 个, 共 0 个通过 (总 {len(urls)} 个)")
-        return results
-
-    # 第二阶段：检测分辨率（真异步，传入缓存内容）
-    Log(f"第二阶段: 分辨率检测 ({len(connectable)} 个连通源)...")
-    failReasons = {"no_segments": 0, "detect_failed": 0, "low_res": 0}
-    resSem = asyncio.Semaphore(50)  # ffprobe 并发限制
-
-    async def checkRes(url, ipVer, content):
-        async with resSem:
-            return await CheckResolution(url, ipVer, content, debug=False)
-
-    tasks = []
-    taskInfo = []
-    for url in connectable:
-        content = connectable[url]
-        if content["v4"]:
-            tasks.append(checkRes(url, 4, content["v4"]))
-            taskInfo.append((url, 4))
-        if content["v6"]:
-            tasks.append(checkRes(url, 6, content["v6"]))
-            taskInfo.append((url, 6))
-
-    Log(f"  并发检测 {len(tasks)} 个...")
-    batchResults = await asyncio.gather(*tasks)
-
-    for (url, ipVer), result in zip(taskInfo, batchResults):
-        is1080p, width, height, reason = result
-        key = "v4" if ipVer == 4 else "v6"
-        results[url][key] = is1080p
-        if not is1080p:
-            if reason == "ok":
-                failReasons["low_res"] += 1
-            elif reason in failReasons:
-                failReasons[reason] += 1
-
-    # 统计
-    v4Count = sum(1 for r in results.values() if r["v4"])
-    v6Count = sum(1 for r in results.values() if r["v6"])
-    totalPass = sum(1 for r in results.values() if r["v4"] or r["v6"])
-
-    Log(f"1080p 源: IPv4 {v4Count} 个, IPv6 {v6Count} 个, 共 {totalPass} 个通过 (总 {len(urls)} 个)")
-    Log(f"失败原因: 无分片 {failReasons['no_segments']}, 检测失败 {failReasons['detect_failed']}, 低分辨率 {failReasons['low_res']}")
-
-    return results
 
 
 async def TestUrl(url, ipVer, timeout=30):
@@ -602,7 +451,7 @@ def CalcScore(results, rounds):
     }
 
 
-async def SelectBestSources(chDict, rounds=5, interval=60, timeout=30, maxConcur=100, checkResolution=True):
+async def SelectBestSources(chDict, rounds=5, interval=60, timeout=30, maxConcur=100):
     """为每个频道选择最优源（真异步，semaphore 控制并发）"""
     # 构建 URL -> [(chId, src), ...] 映射，实现全局去重
     urlMap = {}
@@ -617,45 +466,34 @@ async def SelectBestSources(chDict, rounds=5, interval=60, timeout=30, maxConcur
 
     allUrls = list(urlMap.keys())
 
-    if checkResolution:
-        # 分辨率预检：只保留 1080p
-        resResults = await FilterByResolution(allUrls, maxConcur)
-        # 按协议筛选出 1080p 源
-        v4Urls = [url for url in allUrls if resResults[url]["v4"]]
-        v6Urls = [url for url in allUrls if resResults[url]["v6"]]
-        uniqueUrls = list(set(v4Urls + v6Urls))
-        if not uniqueUrls:
-            Log("没有找到 1080p 源")
-            return {}, {}, {}
-    else:
-        # 跳过分辨率检测，直接用连通性检查
-        Log(f"--- 连通性检查 ---")
-        resResults = {}
-        sem = asyncio.Semaphore(maxConcur)
+    # 连通性检查
+    Log(f"--- 连通性检查 ---")
+    connResults = {}
+    sem = asyncio.Semaphore(maxConcur)
 
-        async def checkOne(url, ipVer):
-            async with sem:
-                ok, _ = await QuickConnectCheck(url, ipVer)
-                return ok
+    async def checkOne(url, ipVer):
+        async with sem:
+            ok, _ = await QuickConnectCheck(url, ipVer)
+            return ok
 
-        Log(f"检查 {len(allUrls)} 个 URL...")
-        tasks = []
-        for url in allUrls:
-            tasks.append(checkOne(url, 4))
-            tasks.append(checkOne(url, 6))
-        results = await asyncio.gather(*tasks)
+    Log(f"检查 {len(allUrls)} 个 URL...")
+    tasks = []
+    for url in allUrls:
+        tasks.append(checkOne(url, 4))
+        tasks.append(checkOne(url, 6))
+    results = await asyncio.gather(*tasks)
 
-        for i, url in enumerate(allUrls):
-            resResults[url] = {"v4": results[i * 2], "v6": results[i * 2 + 1]}
+    for i, url in enumerate(allUrls):
+        connResults[url] = {"v4": results[i * 2], "v6": results[i * 2 + 1]}
 
-        v4Urls = [url for url in allUrls if resResults[url]["v4"]]
-        v6Urls = [url for url in allUrls if resResults[url]["v6"]]
-        uniqueUrls = list(set(v4Urls + v6Urls))
-        Log(f"可连接源: IPv4 {len(v4Urls)} 个, IPv6 {len(v6Urls)} 个, 共 {len(uniqueUrls)} 个")
+    v4Urls = [url for url in allUrls if connResults[url]["v4"]]
+    v6Urls = [url for url in allUrls if connResults[url]["v6"]]
+    uniqueUrls = list(set(v4Urls + v6Urls))
+    Log(f"可连接源: IPv4 {len(v4Urls)} 个, IPv6 {len(v6Urls)} 个, 共 {len(uniqueUrls)} 个")
 
-        if not uniqueUrls:
-            Log("没有找到可连接的源")
-            return {}, {}, {}
+    if not uniqueUrls:
+        Log("没有找到可连接的源")
+        return {}, {}, {}
 
     total = len(uniqueUrls)
     Log(f"--- 双栈测速 ---")
@@ -680,7 +518,7 @@ async def SelectBestSources(chDict, rounds=5, interval=60, timeout=30, maxConcur
         # 用 semaphore 控制并发，所有任务一起启动
         tasks = []
         for url in uniqueUrls:
-            tasks.append(testOne(url, resResults[url]["v4"], resResults[url]["v6"]))
+            tasks.append(testOne(url, connResults[url]["v4"], connResults[url]["v6"]))
 
         batchResults = await asyncio.gather(*tasks)
 
@@ -802,10 +640,27 @@ async def RunOnce():
     settings = cfg.get("设置", {})
     maxRetry = settings.get("抓取重试次数", 3)
     retryDelay = settings.get("抓取重试间隔秒", 3)
+    rounds = settings.get("测速轮数", 5)
+    interval = settings.get("测速间隔秒", 60)
+    timeout = settings.get("测速超时秒", 30)
+    maxConcur = settings.get("最大并发数", 100)
+    autoDisable = settings.get("自动禁用失效源", True)
+
+    # 快速测试模式
+    quickTest = os.environ.get("QUICK_TEST")
+    if quickTest:
+        rounds, interval = 1, 1
+        autoDisable = False  # 快速测试不禁用源
+        Log("[快速测试模式]\n")
+
+    # 测试 GitHub 代理并选择最快的
+    proxies = cfg.get("GitHub代理", [""])
+    testUrl = "https://raw.githubusercontent.com/YanG-1989/m3u/main/Gather.m3u"
+    proxy = await SelectBestProxy(proxies, testUrl)
 
     # 并行抓取所有上游源
     Log("--- 抓取上游源 ---")
-    allItems = await FetchAllSources(cfg.get("上游源", []), cfg, maxRetry, retryDelay)
+    allItems = await FetchAllSources(cfg.get("上游源", []), cfg, proxy, maxRetry, retryDelay, autoDisable)
     Log(f"共抓取 {len(allItems)} 个频道")
 
     # 筛选 CCTV 频道
@@ -814,22 +669,10 @@ async def RunOnce():
     uniqueUrls = len(set(url for urls in chDict.values() for url, _ in urls))
     Log(f"筛选出 CCTV 频道: {totalUrls} 个源 ({uniqueUrls} 个唯一)")
 
-    # 读取测速配置
-    rounds = settings.get("测速轮数", 5)
-    interval = settings.get("测速间隔秒", 60)
-    timeout = settings.get("测速超时秒", 30)
-    maxConcur = settings.get("最大并发数", 100)
-    autoDisable = settings.get("自动禁用失效源", True)
-    checkRes = settings.get("分辨率检测", True)
-
-    # 快速测试模式
-    if os.environ.get("QUICK_TEST"):
-        rounds, interval = 1, 1
-        Log("\n[快速测试模式]")
-    else:
+    if not quickTest:
         Log(f"\n[测速配置: {rounds}轮, 间隔{interval}秒, 超时{timeout}秒, 并发{maxConcur}]")
 
-    bestV4, bestV6, srcStats = await SelectBestSources(chDict, rounds, interval, timeout, maxConcur, checkRes)
+    bestV4, bestV6, srcStats = await SelectBestSources(chDict, rounds, interval, timeout, maxConcur)
 
     # 禁用失效源
     disabled = []
