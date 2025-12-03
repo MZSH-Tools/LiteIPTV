@@ -18,10 +18,10 @@
     <integer>3600</integer>
 
     <key>StandardOutPath</key>
-    <string>/Users/mengzhishanghun/Documents/GitHub/LiteIPTV/logs/output.log</string>
+    <string>/dev/null</string>
 
     <key>StandardErrorPath</key>
-    <string>/Users/mengzhishanghun/Documents/GitHub/LiteIPTV/logs/error.log</string>
+    <string>/dev/null</string>
 
     <key>RunAtLoad</key>
     <true/>
