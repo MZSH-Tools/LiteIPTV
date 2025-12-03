@@ -14,16 +14,18 @@
     <key>WorkingDirectory</key>
     <string>/Users/mengzhishanghun/Documents/GitHub/LiteIPTV</string>
 
-    <key>KeepAlive</key>
-    <true/>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>3</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
 
     <key>StandardOutPath</key>
     <string>/dev/null</string>
 
     <key>StandardErrorPath</key>
     <string>/dev/null</string>
-
-    <key>RunAtLoad</key>
-    <true/>
 </dict>
 </plist>

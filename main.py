@@ -124,19 +124,25 @@ def FetchSource(src, maxRetry, retryDelay):
     return [], False
 
 
-async def FetchAllSources(sources, maxRetry, retryDelay):
+async def FetchAllSources(sources, cfg, maxRetry, retryDelay):
     """并行抓取所有上游源，抓取失败的源自动禁用"""
     loop = asyncio.get_event_loop()
     tasks = [loop.run_in_executor(None, FetchSource, src, maxRetry, retryDelay) for src in sources]
     results = await asyncio.gather(*tasks)
 
     allItems = []
+    disabled = []
     for src, (items, success) in zip(sources, results):
         allItems.extend(items)
         # 抓取失败则禁用
         if not success and src.get("启用", True):
             src["启用"] = False
+            disabled.append(src.get("名称", src["地址"]))
             Log(f"已禁用抓取失败源: {src.get('名称', src['地址'])}")
+
+    # 保存配置
+    if disabled:
+        SaveConfig(cfg)
 
     return allItems
 
@@ -431,7 +437,7 @@ async def RunOnce():
 
     # 并行抓取所有上游源
     Log("--- 抓取上游源 ---")
-    allItems = await FetchAllSources(cfg.get("上游源", []), maxRetry, retryDelay)
+    allItems = await FetchAllSources(cfg.get("上游源", []), cfg, maxRetry, retryDelay)
     Log(f"共抓取 {len(allItems)} 个频道")
 
     # 筛选 CCTV 频道
@@ -483,29 +489,16 @@ async def RunOnce():
 
 
 async def Main():
-    """主函数 - 长驻运行模式"""
+    """主函数 - 单次执行模式（由 launchd 定时调度）"""
     # 初始化日志目录
     LogDir.mkdir(parents=True, exist_ok=True)
+    # 清空日志文件
+    LogFile.write_text("")
 
-    Log(f"=== LiteIPTV 服务启动: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===")
-
-    while True:
-        # 清空日志文件
-        LogFile.write_text("")
-
-        try:
-            await RunOnce()
-        except Exception as e:
-            Log(f"执行出错: {e}")
-
-        # 读取运行间隔
-        cfg = LoadConfig()
-        runInterval = 3600  # 默认 1 小时
-        if cfg:
-            runInterval = cfg.get("设置", {}).get("运行间隔秒", 3600)
-
-        Log(f"\n下次执行: {runInterval} 秒后")
-        await asyncio.sleep(runInterval)
+    try:
+        await RunOnce()
+    except Exception as e:
+        Log(f"执行出错: {e}")
 
 
 if __name__ == "__main__":
