@@ -359,12 +359,8 @@ def CommitAndPush():
     Log(f"已推送: {msg}")
 
 
-async def Main():
-    """主函数"""
-    # 初始化日志目录并清空日志
-    LogDir.mkdir(parents=True, exist_ok=True)
-    LogFile.write_text("")
-
+async def RunOnce():
+    """执行一次抓取测速流程"""
     Log(f"=== LiteIPTV 开始: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===")
 
     cfg = LoadConfig()
@@ -427,6 +423,32 @@ async def Main():
         Log("无变化，跳过推送")
 
     Log(f"=== LiteIPTV 结束: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===")
+
+
+async def Main():
+    """主函数 - 长驻运行模式"""
+    # 初始化日志目录
+    LogDir.mkdir(parents=True, exist_ok=True)
+
+    Log(f"=== LiteIPTV 服务启动: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===")
+
+    while True:
+        # 清空日志文件
+        LogFile.write_text("")
+
+        try:
+            await RunOnce()
+        except Exception as e:
+            Log(f"执行出错: {e}")
+
+        # 读取运行间隔
+        cfg = LoadConfig()
+        runInterval = 3600  # 默认 1 小时
+        if cfg:
+            runInterval = cfg.get("设置", {}).get("运行间隔秒", 3600)
+
+        Log(f"\n下次执行: {runInterval} 秒后")
+        await asyncio.sleep(runInterval)
 
 
 if __name__ == "__main__":

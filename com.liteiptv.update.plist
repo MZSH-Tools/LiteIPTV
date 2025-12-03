@@ -14,8 +14,8 @@
     <key>WorkingDirectory</key>
     <string>/Users/mengzhishanghun/Documents/GitHub/LiteIPTV</string>
 
-    <key>StartInterval</key>
-    <integer>3600</integer>
+    <key>KeepAlive</key>
+    <true/>
 
     <key>StandardOutPath</key>
     <string>/dev/null</string>

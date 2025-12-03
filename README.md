@@ -69,6 +69,7 @@
 ```json
 {
   "设置": {
+    "运行间隔秒": 3600,
     "测速轮数": 5,
     "测速间隔秒": 60,
     "自动禁用失效源": true
@@ -85,6 +86,7 @@
 
 | 参数 | 说明 |
 |------|------|
+| 运行间隔秒 | 每次执行完成后的等待时间（默认 3600 秒） |
 | 测速轮数 | 每个 URL 测试的次数 |
 | 测速间隔秒 | 每轮测速之间的等待时间 |
 | 自动禁用失效源 | 上游源所有频道失效时自动禁用 |
@@ -107,7 +109,6 @@ python3 main.py
 1. 修改 `com.liteiptv.update.plist` 中的路径：
    - `ProgramArguments`: Python 路径和 main.py 路径
    - `WorkingDirectory`: 项目目录
-   - `StandardOutPath` / `StandardErrorPath`: 日志路径
 
 2. 安装守护进程：
 
@@ -115,18 +116,14 @@ python3 main.py
 # 复制到 LaunchAgents
 cp com.liteiptv.update.plist ~/Library/LaunchAgents/
 
-# 加载任务（立即运行一次，之后每小时运行）
+# 加载（立即启动，进程常驻运行）
 launchctl load ~/Library/LaunchAgents/com.liteiptv.update.plist
 
 # 查看状态
 launchctl list | grep liteiptv
 
-# 手动触发一次
-launchctl start com.liteiptv.update
-
-# 查看日志
-tail -f logs/output.log
-tail -f logs/error.log
+# 查看日志（macOS 控制台也可查看）
+tail -f ~/Library/Logs/LiteIPTV/LiteIPTV.log
 ```
 
 3. 卸载守护进程：
@@ -136,9 +133,9 @@ launchctl unload ~/Library/LaunchAgents/com.liteiptv.update.plist
 rm ~/Library/LaunchAgents/com.liteiptv.update.plist
 ```
 
-### 运行频率
+### 运行模式
 
-默认每小时运行一次（`StartInterval: 3600`）。如需修改，编辑 plist 文件中的 `StartInterval` 值（单位：秒）。
+程序启动后常驻运行，按 `运行间隔秒` 配置自动执行（默认每小时）。launchd 仅负责启动和保活，进程意外退出会自动重启。
 
 ## 许可证
 
