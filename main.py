@@ -295,12 +295,11 @@ def Is1080p(width, height):
     return False
 
 
-def TestUrlCurl(url, ipVer, timeout=30):
-    """测试 URL，模拟真实播放：连续下载多个 ts 分片，只接受 1080p"""
-    # 先获取 m3u8 内容
+def CheckResolution(url, ipVer):
+    """检查 URL 分辨率，返回 (is1080p, width, height)"""
     content = CurlFetch(url, ipVer, timeout=10)
     if not content:
-        return None
+        return False, None, None
 
     # 尝试从 m3u8 解析分辨率
     width, height = ParseM3u8Resolution(content)
@@ -308,15 +307,67 @@ def TestUrlCurl(url, ipVer, timeout=30):
     # 解析分片
     segments = ParseM3u8Segments(content, url)
     if not segments:
-        # 不是 m3u8 或无分片，跳过
-        return None
+        return False, None, None
 
     # 如果 m3u8 没有分辨率信息，用 ffprobe 检测第一个分片
     if not width or not height:
         width, height = DetectResolutionFfprobe(segments[0], ipVer)
 
-    # 只接受 1080p
-    if not Is1080p(width, height):
+    return Is1080p(width, height), width, height
+
+
+async def FilterByResolution(urls, maxConcur=500):
+    """并行检查分辨率，只保留 1080p 源"""
+    Log(f"--- 分辨率预检 ---")
+    Log(f"检查 {len(urls)} 个 URL...")
+
+    loop = asyncio.get_event_loop()
+    results = {}
+
+    # 分批并行检查
+    urlList = list(urls)
+    for i in range(0, len(urlList), maxConcur):
+        batch = urlList[i:i + maxConcur]
+        end = min(i + maxConcur, len(urlList))
+        Log(f"  检查中: {i + 1}-{end} / {len(urlList)}")
+
+        # 每个 URL 同时检查 v4 和 v6
+        tasks = []
+        for url in batch:
+            tasks.append(loop.run_in_executor(None, CheckResolution, url, 4))
+            tasks.append(loop.run_in_executor(None, CheckResolution, url, 6))
+
+        batchResults = await asyncio.gather(*tasks)
+
+        # 解析结果
+        for j, url in enumerate(batch):
+            v4Result = batchResults[j * 2]
+            v6Result = batchResults[j * 2 + 1]
+            results[url] = {
+                "v4": v4Result[0],  # is1080p
+                "v6": v6Result[0]
+            }
+
+    # 统计
+    v4Count = sum(1 for r in results.values() if r["v4"])
+    v6Count = sum(1 for r in results.values() if r["v6"])
+    totalPass = sum(1 for r in results.values() if r["v4"] or r["v6"])
+
+    Log(f"1080p 源: IPv4 {v4Count} 个, IPv6 {v6Count} 个, 共 {totalPass} 个通过 (总 {len(urls)} 个)")
+
+    return results
+
+
+def TestUrlCurl(url, ipVer, timeout=30):
+    """测试 URL，模拟真实播放：连续下载多个 ts 分片"""
+    # 获取 m3u8 内容
+    content = CurlFetch(url, ipVer, timeout=10)
+    if not content:
+        return None
+
+    # 解析分片
+    segments = ParseM3u8Segments(content, url)
+    if not segments:
         return None
 
     # 下载前 5 个分片（或全部，如果少于 5 个）
@@ -351,17 +402,29 @@ def TestUrlCurl(url, ipVer, timeout=30):
         "ttfb": avgTtfb,
         "total": totalTime,
         "segments": len(results),
-        "speedStd": speedStd,
-        "resolution": f"{width}x{height}"
+        "speedStd": speedStd
     }
 
 
-async def TestUrlOnce(url, timeout=2):
-    """单次双栈测速"""
+async def TestUrlOnce(url, timeout=2, testV4=True, testV6=True):
+    """单次双栈测速，可指定只测某个协议"""
     loop = asyncio.get_event_loop()
-    v4Task = loop.run_in_executor(None, TestUrlCurl, url, 4, timeout)
-    v6Task = loop.run_in_executor(None, TestUrlCurl, url, 6, timeout)
-    v4Time, v6Time = await asyncio.gather(v4Task, v6Task)
+    v4Time, v6Time = None, None
+
+    tasks = []
+    if testV4:
+        tasks.append(("v4", loop.run_in_executor(None, TestUrlCurl, url, 4, timeout)))
+    if testV6:
+        tasks.append(("v6", loop.run_in_executor(None, TestUrlCurl, url, 6, timeout)))
+
+    if tasks:
+        results = await asyncio.gather(*[t[1] for t in tasks])
+        for i, (proto, _) in enumerate(tasks):
+            if proto == "v4":
+                v4Time = results[i]
+            else:
+                v6Time = results[i]
+
     return {"v4": v4Time, "v6": v6Time}
 
 
@@ -441,9 +504,23 @@ async def SelectBestSources(chDict, rounds=5, interval=60, timeout=2, maxConcur=
     if not urlMap:
         return {}, {}, {}
 
-    uniqueUrls = list(urlMap.keys())
+    allUrls = list(urlMap.keys())
+
+    # 分辨率预检：只保留 1080p
+    resResults = await FilterByResolution(allUrls, maxConcur)
+
+    # 按协议筛选出 1080p 源
+    v4Urls = [url for url in allUrls if resResults[url]["v4"]]
+    v6Urls = [url for url in allUrls if resResults[url]["v6"]]
+    uniqueUrls = list(set(v4Urls + v6Urls))
+
+    if not uniqueUrls:
+        Log("没有找到 1080p 源")
+        return {}, {}, {}
+
     total = len(uniqueUrls)
-    Log(f"全局并行测速: {total} 个唯一URL, {rounds} 轮, 间隔 {interval}秒, 超时 {timeout}秒, 并发 {maxConcur}")
+    Log(f"--- 双栈测速 ---")
+    Log(f"测速 {total} 个 1080p 源, {rounds} 轮, 间隔 {interval}秒, 并发 {maxConcur}")
 
     # 存储每个 URL 的测速结果
     urlResults = {url: {"v4": [], "v6": []} for url in uniqueUrls}
@@ -461,7 +538,10 @@ async def SelectBestSources(chDict, rounds=5, interval=60, timeout=2, maxConcur=
             batch = uniqueUrls[i:i + maxConcur]
             end = min(i + maxConcur, total)
             Log(f"    测速中: {i + 1}-{end} / {total}")
-            tasks = [TestUrlOnce(url, timeout) for url in batch]
+            # 只测已通过分辨率检查的协议
+            tasks = []
+            for url in batch:
+                tasks.append(TestUrlOnce(url, timeout, resResults[url]["v4"], resResults[url]["v6"]))
             batchResults = await asyncio.gather(*tasks)
 
             # 记录结果
@@ -470,12 +550,6 @@ async def SelectBestSources(chDict, rounds=5, interval=60, timeout=2, maxConcur=
                     urlResults[url]["v4"].append(result["v4"])
                 if result["v6"] is not None:
                     urlResults[url]["v6"].append(result["v6"])
-
-        # 第一轮结束后统计 1080p 源数量
-        if r == 0:
-            v4Count = sum(1 for url in uniqueUrls if urlResults[url]["v4"])
-            v6Count = sum(1 for url in uniqueUrls if urlResults[url]["v6"])
-            Log(f"  1080p 源: IPv4 {v4Count} 个, IPv6 {v6Count} 个 (总 {total} 个)")
 
     # 汇总结果
     bestV4, bestV6 = {}, {}
