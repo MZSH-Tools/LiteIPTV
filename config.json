@@ -53,7 +53,7 @@
     {
       "名称": "yuanzl77-live",
       "地址": "https://raw.githubusercontent.com/yuanzl77/IPTV/main/live.m3u",
-      "启用": true
+      "启用": false
     },
     {
       "名称": "BurningC4-IPV4",
