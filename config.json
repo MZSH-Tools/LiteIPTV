@@ -9,6 +9,10 @@
     "最大并发数": 500,
     "自动禁用失效源": true
   },
+  "黑名单": [
+    "freetv.top",
+    "hebtv.com"
+  ],
   "GitHub代理": [
     "",
     "https://ghfast.top/",
