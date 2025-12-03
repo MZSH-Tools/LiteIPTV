@@ -302,7 +302,7 @@ async def TestUrlOnce(url, timeout=2):
 
 
 def CalcScore(results, rounds):
-    """综合评分算法：稳定性(40%) + 带宽(35%) + 连接速度(15%) + 抖动(10%)"""
+    """综合评分算法：分片稳定性(30%) + 轮次稳定性(20%) + 带宽(30%) + 连接速度(20%)"""
     if not results:
         return None
 
@@ -312,10 +312,13 @@ def CalcScore(results, rounds):
     # 提取各项指标
     speeds = [r["speed"] for r in results]
     ttfbs = [r["ttfb"] for r in results]
+    # 分片级稳定性（每次测试内部的波动）
+    segStds = [r.get("speedStd", 0) for r in results]
 
     # 平均值
     avgSpeed = sum(speeds) / len(speeds)
     avgTtfb = sum(ttfbs) / len(ttfbs)
+    avgSegStd = sum(segStds) / len(segStds)
 
     # 标准差计算
     def stdDev(values, avg):
@@ -324,12 +327,15 @@ def CalcScore(results, rounds):
         variance = sum((v - avg) ** 2 for v in values) / len(values)
         return variance ** 0.5
 
-    speedStd = stdDev(speeds, avgSpeed)
-    ttfbStd = stdDev(ttfbs, avgTtfb)
+    # 轮次间速率标准差
+    roundStd = stdDev(speeds, avgSpeed)
 
     # 各项评分（0-100分）
-    # 稳定性：速率波动越小越好（变异系数）
-    stabilityScore = 100 - min(100, (speedStd / (avgSpeed + 1)) * 100)
+    # 分片稳定性：单次测试内分片速率波动越小越好
+    segStabilityScore = 100 - min(100, (avgSegStd / (avgSpeed + 1)) * 100)
+
+    # 轮次稳定性：不同时间点测速结果波动越小越好
+    roundStabilityScore = 100 - min(100, (roundStd / (avgSpeed + 1)) * 100)
 
     # 带宽分：以 2Mbps (250KB/s) 为满分标准
     targetSpeed = 250000  # bytes/s
@@ -338,24 +344,22 @@ def CalcScore(results, rounds):
     # 连接分：TTFB 越小越好，0.5秒以内满分
     connectScore = max(0, 100 - avgTtfb * 200)
 
-    # 抖动分：TTFB 波动越小越好
-    jitterScore = max(0, 100 - ttfbStd * 500)
-
     # 成功率惩罚：成功率低于100%时大幅降低总分
     ratePenalty = successRate ** 2
 
     # 综合评分 = 各项加权 × 成功率惩罚
-    score = (stabilityScore * 0.4 + bandwidthScore * 0.35 +
-             connectScore * 0.15 + jitterScore * 0.1) * ratePenalty
+    # 分片稳定性 30% + 轮次稳定性 20% + 带宽 30% + 连接 20%
+    score = (segStabilityScore * 0.3 + roundStabilityScore * 0.2 +
+             bandwidthScore * 0.3 + connectScore * 0.2) * ratePenalty
 
     return {
         "rate": successRate,
         "avgSpeed": avgSpeed,
         "avgTtfb": avgTtfb,
-        "stability": stabilityScore,
+        "segStability": segStabilityScore,
+        "roundStability": roundStabilityScore,
         "bandwidth": bandwidthScore,
         "connect": connectScore,
-        "jitter": jitterScore,
         "score": score
     }
 
