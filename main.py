@@ -471,6 +471,12 @@ async def SelectBestSources(chDict, rounds=5, interval=60, timeout=2, maxConcur=
                 if result["v6"] is not None:
                     urlResults[url]["v6"].append(result["v6"])
 
+        # 第一轮结束后统计 1080p 源数量
+        if r == 0:
+            v4Count = sum(1 for url in uniqueUrls if urlResults[url]["v4"])
+            v6Count = sum(1 for url in uniqueUrls if urlResults[url]["v6"])
+            Log(f"  1080p 源: IPv4 {v4Count} 个, IPv6 {v6Count} 个 (总 {total} 个)")
+
     # 汇总结果
     bestV4, bestV6 = {}, {}
     srcStats = {}
