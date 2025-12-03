@@ -243,18 +243,81 @@ def ParseM3u8Segments(content, baseUrl):
     return segments
 
 
+def ParseM3u8Resolution(content):
+    """从 m3u8 内容解析分辨率"""
+    # 匹配 RESOLUTION=1920x1080 格式
+    match = re.search(r'RESOLUTION=(\d+)x(\d+)', content)
+    if match:
+        return int(match.group(1)), int(match.group(2))
+    return None, None
+
+
+def DetectResolutionFfprobe(tsUrl, ipVer):
+    """使用 ffprobe 检测 ts 分片分辨率"""
+    flag = "-4" if ipVer == 4 else "-6"
+    try:
+        # 使用 curl 下载分片到临时文件
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".ts", delete=False) as tmp:
+            tmpPath = tmp.name
+
+        result = subprocess.run(
+            ["curl", flag, "-s", "-L", "--max-time", "10", "-o", tmpPath, tsUrl],
+            capture_output=True
+        )
+        if result.returncode != 0:
+            return None, None
+
+        # 使用 ffprobe 检测分辨率
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height", "-of", "csv=p=0", tmpPath],
+            capture_output=True, text=True
+        )
+
+        # 清理临时文件
+        import os
+        os.unlink(tmpPath)
+
+        if result.returncode == 0 and result.stdout.strip():
+            parts = result.stdout.strip().split(",")
+            if len(parts) == 2:
+                return int(parts[0]), int(parts[1])
+    except:
+        pass
+    return None, None
+
+
+def Is1080p(width, height):
+    """判断是否为 1080p（高度 >= 1080）"""
+    if width and height:
+        return height >= 1080
+    return False
+
+
 def TestUrlCurl(url, ipVer, timeout=30):
-    """测试 URL，模拟真实播放：连续下载多个 ts 分片"""
+    """测试 URL，模拟真实播放：连续下载多个 ts 分片，只接受 1080p"""
     # 先获取 m3u8 内容
     content = CurlFetch(url, ipVer, timeout=10)
     if not content:
         return None
 
+    # 尝试从 m3u8 解析分辨率
+    width, height = ParseM3u8Resolution(content)
+
     # 解析分片
     segments = ParseM3u8Segments(content, url)
     if not segments:
-        # 不是 m3u8 或无分片，回退到普通下载测试
-        return CurlDownload(url, ipVer, timeout)
+        # 不是 m3u8 或无分片，跳过
+        return None
+
+    # 如果 m3u8 没有分辨率信息，用 ffprobe 检测第一个分片
+    if not width or not height:
+        width, height = DetectResolutionFfprobe(segments[0], ipVer)
+
+    # 只接受 1080p
+    if not Is1080p(width, height):
+        return None
 
     # 下载前 5 个分片（或全部，如果少于 5 个）
     testSegs = segments[:5]
@@ -288,7 +351,8 @@ def TestUrlCurl(url, ipVer, timeout=30):
         "ttfb": avgTtfb,
         "total": totalTime,
         "segments": len(results),
-        "speedStd": speedStd
+        "speedStd": speedStd,
+        "resolution": f"{width}x{height}"
     }
 
 
