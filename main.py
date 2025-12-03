@@ -94,39 +94,50 @@ def SaveConfig(cfg):
     return True
 
 
-def FetchSource(src):
-    """抓取单个上游源，返回带 source 标记的频道列表"""
+def FetchSource(src, maxRetry, retryDelay):
+    """抓取单个上游源，失败时重试，返回 (items, success)"""
     if not src.get("启用", True):
-        return []
+        return [], True  # 未启用不算失败
 
     url = src["地址"]
     name = src.get("名称", url)
 
-    try:
-        result = subprocess.run(
-            ["curl", "-s", "-L", "--max-time", "30", url],
-            capture_output=True, text=True
-        )
-        if result.returncode == 0 and result.stdout:
-            items = ParseM3U(result.stdout)
-            for item in items:
-                item["source"] = name
-            Log(f"已抓取 {name}: {len(items)} 个频道")
-            return items
-        Log(f"抓取失败 {name}: curl 返回码 {result.returncode}")
-    except Exception as e:
-        Log(f"抓取异常 {name}: {type(e).__name__}")
-    return []
+    for attempt in range(maxRetry):
+        try:
+            result = subprocess.run(
+                ["curl", "-s", "-L", "--max-time", "30", url],
+                capture_output=True, text=True
+            )
+            if result.returncode == 0 and result.stdout:
+                items = ParseM3U(result.stdout)
+                for item in items:
+                    item["source"] = name
+                Log(f"已抓取 {name}: {len(items)} 个频道")
+                return items, True
+            if attempt < maxRetry - 1:
+                time.sleep(retryDelay)
+        except:
+            if attempt < maxRetry - 1:
+                time.sleep(retryDelay)
+
+    Log(f"抓取失败 {name}: {maxRetry} 次尝试均失败")
+    return [], False
 
 
-async def FetchAllSources(sources):
-    """并行抓取所有上游源"""
+async def FetchAllSources(sources, maxRetry, retryDelay):
+    """并行抓取所有上游源，抓取失败的源自动禁用"""
     loop = asyncio.get_event_loop()
-    tasks = [loop.run_in_executor(None, FetchSource, src) for src in sources]
+    tasks = [loop.run_in_executor(None, FetchSource, src, maxRetry, retryDelay) for src in sources]
     results = await asyncio.gather(*tasks)
+
     allItems = []
-    for items in results:
+    for src, (items, success) in zip(sources, results):
         allItems.extend(items)
+        # 抓取失败则禁用
+        if not success and src.get("启用", True):
+            src["启用"] = False
+            Log(f"已禁用抓取失败源: {src.get('名称', src['地址'])}")
+
     return allItems
 
 
@@ -187,38 +198,29 @@ def TestUrlCurl(url, ipVer, timeout=5):
     return None
 
 
-async def TestUrlDualStack(url, rounds=5, interval=60, timeout=2):
-    """双栈测速，分别测试 IPv4 和 IPv6"""
+async def TestUrlOnce(url, timeout=2):
+    """单次双栈测速"""
     loop = asyncio.get_event_loop()
-    v4Results, v6Results = [], []
+    v4Task = loop.run_in_executor(None, TestUrlCurl, url, 4, timeout)
+    v6Task = loop.run_in_executor(None, TestUrlCurl, url, 6, timeout)
+    v4Time, v6Time = await asyncio.gather(v4Task, v6Task)
+    return {"v4": v4Time, "v6": v6Time}
 
-    for i in range(rounds):
-        if i > 0:
-            await asyncio.sleep(interval)
-        v4Task = loop.run_in_executor(None, TestUrlCurl, url, 4, timeout)
-        v6Task = loop.run_in_executor(None, TestUrlCurl, url, 6, timeout)
-        v4Time, v6Time = await asyncio.gather(v4Task, v6Task)
-        if v4Time is not None:
-            v4Results.append(v4Time)
-        if v6Time is not None:
-            v6Results.append(v6Time)
 
-    def CalcScore(results):
-        if not results:
-            return None
-        rate = len(results) / rounds
-        avgMs = sum(results) / len(results) * 1000  # 转换为毫秒
-        # 评分 = 成功率 * 1000 / 平均响应时间(ms)，分数越高越好
-        score = rate * 1000 / (avgMs + 10)
-        return {"rate": rate, "avgMs": avgMs, "score": score}
-
-    return {"v4": CalcScore(v4Results), "v6": CalcScore(v6Results)}
+def CalcScore(results, rounds):
+    """计算评分"""
+    if not results:
+        return None
+    rate = len(results) / rounds
+    avgMs = sum(results) / len(results) * 1000
+    score = rate * 1000 / (avgMs + 10)
+    return {"rate": rate, "avgMs": avgMs, "score": score}
 
 
 async def SelectBestSources(chDict, rounds=5, interval=60, timeout=2, maxConcur=100):
-    """为每个频道选择最优源（全局并行双栈测速，限制并发数）"""
+    """为每个频道选择最优源（全局轮次，每轮测完再等待间隔）"""
     # 构建 URL -> [(chId, src), ...] 映射，实现全局去重
-    urlMap = {}  # url -> [(chId, src), ...]
+    urlMap = {}
     for chId, urlList in chDict.items():
         for url, src in urlList:
             if url not in urlMap:
@@ -230,26 +232,42 @@ async def SelectBestSources(chDict, rounds=5, interval=60, timeout=2, maxConcur=
 
     uniqueUrls = list(urlMap.keys())
     total = len(uniqueUrls)
-    Log(f"全局并行测速: {total} 个唯一URL, {rounds} 轮, 超时 {timeout}秒, 并发 {maxConcur}")
+    Log(f"全局并行测速: {total} 个唯一URL, {rounds} 轮, 间隔 {interval}秒, 超时 {timeout}秒, 并发 {maxConcur}")
 
-    # 分批测速，显示进度
-    results = []
-    for i in range(0, total, maxConcur):
-        batch = uniqueUrls[i:i + maxConcur]
-        end = min(i + maxConcur, total)
-        Log(f"  测速中: {i + 1}-{end} / {total}")
-        tasks = [TestUrlDualStack(url, rounds, interval, timeout) for url in batch]
-        batchResults = await asyncio.gather(*tasks)
-        results.extend(batchResults)
+    # 存储每个 URL 的测速结果
+    urlResults = {url: {"v4": [], "v6": []} for url in uniqueUrls}
+
+    # 全局轮次：每轮测完所有 URL 后再等待间隔
+    for r in range(rounds):
+        if r > 0:
+            Log(f"  等待 {interval} 秒后开始第 {r + 1} 轮...")
+            await asyncio.sleep(interval)
+
+        Log(f"  第 {r + 1}/{rounds} 轮:")
+
+        # 分批并发测速
+        for i in range(0, total, maxConcur):
+            batch = uniqueUrls[i:i + maxConcur]
+            end = min(i + maxConcur, total)
+            Log(f"    测速中: {i + 1}-{end} / {total}")
+            tasks = [TestUrlOnce(url, timeout) for url in batch]
+            batchResults = await asyncio.gather(*tasks)
+
+            # 记录结果
+            for url, result in zip(batch, batchResults):
+                if result["v4"] is not None:
+                    urlResults[url]["v4"].append(result["v4"])
+                if result["v6"] is not None:
+                    urlResults[url]["v6"].append(result["v6"])
 
     # 汇总结果
     bestV4, bestV6 = {}, {}
     srcStats = {}
     chScores = {ch: {"v4": (-1, None), "v6": (-1, None)} for ch in Channels}
 
-    for url, result in zip(uniqueUrls, results):
-        v4 = result.get("v4")
-        v6 = result.get("v6")
+    for url in uniqueUrls:
+        v4 = CalcScore(urlResults[url]["v4"], rounds)
+        v6 = CalcScore(urlResults[url]["v6"], rounds)
 
         # 将结果分配给所有相关频道
         for chId, src in urlMap[url]:
@@ -268,8 +286,8 @@ async def SelectBestSources(chDict, rounds=5, interval=60, timeout=2, maxConcur=
 
     # 提取最优结果
     for chId in Channels:
-        v4Score, v4Url = chScores[chId]["v4"]
-        v6Score, v6Url = chScores[chId]["v6"]
+        _, v4Url = chScores[chId]["v4"]
+        _, v6Url = chScores[chId]["v6"]
         if v4Url:
             bestV4[chId] = v4Url
         if v6Url:
@@ -353,18 +371,23 @@ async def Main():
     if not cfg:
         return
 
+    # 读取配置
+    settings = cfg.get("设置", {})
+    maxRetry = settings.get("抓取重试次数", 3)
+    retryDelay = settings.get("抓取重试间隔秒", 3)
+
     # 并行抓取所有上游源
     Log("--- 抓取上游源 ---")
-    allItems = await FetchAllSources(cfg.get("上游源", []))
+    allItems = await FetchAllSources(cfg.get("上游源", []), maxRetry, retryDelay)
     Log(f"共抓取 {len(allItems)} 个频道")
 
     # 筛选 CCTV 频道
     chDict = FilterChannels(allItems)
     totalUrls = sum(len(urls) for urls in chDict.values())
-    Log(f"筛选出 CCTV 频道: {totalUrls} 个源")
+    uniqueUrls = len(set(url for urls in chDict.values() for url, _ in urls))
+    Log(f"筛选出 CCTV 频道: {totalUrls} 个源 ({uniqueUrls} 个唯一)")
 
     # 读取测速配置
-    settings = cfg.get("设置", {})
     rounds = settings.get("测速轮数", 5)
     interval = settings.get("测速间隔秒", 60)
     timeout = settings.get("测速超时秒", 2)
