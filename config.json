@@ -13,7 +13,7 @@
     {
       "名称": "iptv-api",
       "地址": "https://raw.githubusercontent.com/Guovin/iptv-api/gd/output/result.m3u",
-      "启用": true
+      "启用": false
     },
     {
       "名称": "vbskycn-iptv4",
