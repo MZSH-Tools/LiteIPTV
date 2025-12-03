@@ -187,10 +187,24 @@ def FilterChannels(allItems):
     return result
 
 
-def TestUrlCurl(url, ipVer, timeout=5):
-    """使用 curl 测试 URL，返回多指标数据"""
+def CurlFetch(url, ipVer, timeout=10):
+    """使用 curl 获取内容"""
     flag = "-4" if ipVer == 4 else "-6"
-    # 输出格式：状态码|下载字节|下载速率|首字节时间|总时间
+    try:
+        result = subprocess.run(
+            ["curl", flag, "-s", "-L", "--max-time", str(timeout), url],
+            capture_output=True, text=True
+        )
+        if result.returncode == 0:
+            return result.stdout
+    except:
+        pass
+    return None
+
+
+def CurlDownload(url, ipVer, timeout=5):
+    """使用 curl 下载并返回指标"""
+    flag = "-4" if ipVer == 4 else "-6"
     fmt = "%{http_code}|%{size_download}|%{speed_download}|%{time_starttransfer}|%{time_total}"
     try:
         result = subprocess.run(
@@ -202,14 +216,80 @@ def TestUrlCurl(url, ipVer, timeout=5):
             parts = result.stdout.strip().split("|")
             if len(parts) == 5 and parts[0] == "200":
                 return {
-                    "bytes": float(parts[1]),      # 下载字节数
-                    "speed": float(parts[2]),      # 下载速率 bytes/s
-                    "ttfb": float(parts[3]),       # 首字节时间
-                    "total": float(parts[4])       # 总时间
+                    "bytes": float(parts[1]),
+                    "speed": float(parts[2]),
+                    "ttfb": float(parts[3]),
+                    "total": float(parts[4])
                 }
     except:
         pass
     return None
+
+
+def ParseM3u8Segments(content, baseUrl):
+    """解析 m3u8 获取 ts 分片地址"""
+    segments = []
+    for line in content.strip().split("\n"):
+        line = line.strip()
+        if line and not line.startswith("#"):
+            if line.startswith("http"):
+                segments.append(line)
+            else:
+                # 相对路径，拼接 baseUrl
+                if baseUrl.endswith("/"):
+                    segments.append(baseUrl + line)
+                else:
+                    segments.append(baseUrl.rsplit("/", 1)[0] + "/" + line)
+    return segments
+
+
+def TestUrlCurl(url, ipVer, timeout=30):
+    """测试 URL，模拟真实播放：连续下载多个 ts 分片"""
+    # 先获取 m3u8 内容
+    content = CurlFetch(url, ipVer, timeout=10)
+    if not content:
+        return None
+
+    # 解析分片
+    segments = ParseM3u8Segments(content, url)
+    if not segments:
+        # 不是 m3u8 或无分片，回退到普通下载测试
+        return CurlDownload(url, ipVer, timeout)
+
+    # 下载前 5 个分片（或全部，如果少于 5 个）
+    testSegs = segments[:5]
+    results = []
+    for seg in testSegs:
+        r = CurlDownload(seg, ipVer, timeout=10)
+        if r:
+            results.append(r)
+
+    if not results:
+        return None
+
+    # 汇总：取平均值，计算稳定性
+    avgSpeed = sum(r["speed"] for r in results) / len(results)
+    avgTtfb = sum(r["ttfb"] for r in results) / len(results)
+    totalBytes = sum(r["bytes"] for r in results)
+    totalTime = sum(r["total"] for r in results)
+
+    # 计算速率标准差（稳定性指标）
+    speeds = [r["speed"] for r in results]
+    if len(speeds) > 1:
+        avgSpd = sum(speeds) / len(speeds)
+        variance = sum((s - avgSpd) ** 2 for s in speeds) / len(speeds)
+        speedStd = variance ** 0.5
+    else:
+        speedStd = 0
+
+    return {
+        "bytes": totalBytes,
+        "speed": avgSpeed,
+        "ttfb": avgTtfb,
+        "total": totalTime,
+        "segments": len(results),
+        "speedStd": speedStd
+    }
 
 
 async def TestUrlOnce(url, timeout=2):
