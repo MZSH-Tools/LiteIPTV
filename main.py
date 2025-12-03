@@ -182,17 +182,25 @@ def FilterChannels(allItems):
 
 
 def TestUrlCurl(url, ipVer, timeout=5):
-    """使用 curl 测试 URL（指定 IPv4 或 IPv6）"""
+    """使用 curl 测试 URL，返回多指标数据"""
     flag = "-4" if ipVer == 4 else "-6"
+    # 输出格式：状态码|下载字节|下载速率|首字节时间|总时间
+    fmt = "%{http_code}|%{size_download}|%{speed_download}|%{time_starttransfer}|%{time_total}"
     try:
-        start = time.time()
         result = subprocess.run(
-            ["curl", flag, "-s", "-L", "-o", "/dev/null", "-w", "%{http_code}",
+            ["curl", flag, "-s", "-L", "-o", "/dev/null", "-w", fmt,
              "--max-time", str(timeout), url],
             capture_output=True, text=True
         )
-        if result.returncode == 0 and result.stdout.strip() == "200":
-            return time.time() - start
+        if result.returncode == 0:
+            parts = result.stdout.strip().split("|")
+            if len(parts) == 5 and parts[0] == "200":
+                return {
+                    "bytes": float(parts[1]),      # 下载字节数
+                    "speed": float(parts[2]),      # 下载速率 bytes/s
+                    "ttfb": float(parts[3]),       # 首字节时间
+                    "total": float(parts[4])       # 总时间
+                }
     except:
         pass
     return None
@@ -208,13 +216,62 @@ async def TestUrlOnce(url, timeout=2):
 
 
 def CalcScore(results, rounds):
-    """计算评分"""
+    """综合评分算法：稳定性(40%) + 带宽(35%) + 连接速度(15%) + 抖动(10%)"""
     if not results:
         return None
-    rate = len(results) / rounds
-    avgMs = sum(results) / len(results) * 1000
-    score = rate * 1000 / (avgMs + 10)
-    return {"rate": rate, "avgMs": avgMs, "score": score}
+
+    # 成功率
+    successRate = len(results) / rounds
+
+    # 提取各项指标
+    speeds = [r["speed"] for r in results]
+    ttfbs = [r["ttfb"] for r in results]
+
+    # 平均值
+    avgSpeed = sum(speeds) / len(speeds)
+    avgTtfb = sum(ttfbs) / len(ttfbs)
+
+    # 标准差计算
+    def stdDev(values, avg):
+        if len(values) < 2:
+            return 0
+        variance = sum((v - avg) ** 2 for v in values) / len(values)
+        return variance ** 0.5
+
+    speedStd = stdDev(speeds, avgSpeed)
+    ttfbStd = stdDev(ttfbs, avgTtfb)
+
+    # 各项评分（0-100分）
+    # 稳定性：速率波动越小越好（变异系数）
+    stabilityScore = 100 - min(100, (speedStd / (avgSpeed + 1)) * 100)
+
+    # 带宽分：以 2Mbps (250KB/s) 为满分标准
+    targetSpeed = 250000  # bytes/s
+    bandwidthScore = min(100, (avgSpeed / targetSpeed) * 100)
+
+    # 连接分：TTFB 越小越好，0.5秒以内满分
+    connectScore = max(0, 100 - avgTtfb * 200)
+
+    # 抖动分：TTFB 波动越小越好
+    jitterScore = max(0, 100 - ttfbStd * 500)
+
+    # 成功率惩罚：成功率低于100%时大幅降低总分
+    ratePenalty = successRate ** 2
+
+    # 综合评分 = 各项加权 × 成功率惩罚
+    score = (stabilityScore * 0.4 + bandwidthScore * 0.35 +
+             connectScore * 0.15 + jitterScore * 0.1) * ratePenalty
+
+    return {
+        "rate": successRate,
+        "avgSpeed": avgSpeed,
+        "avgTtfb": avgTtfb,
+        "stability": stabilityScore,
+        "bandwidth": bandwidthScore,
+        "connect": connectScore,
+        "jitter": jitterScore,
+        "score": score
+    }
 
 
 async def SelectBestSources(chDict, rounds=5, interval=60, timeout=2, maxConcur=100):
