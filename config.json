@@ -35,7 +35,7 @@
     {
       "名称": "suxuang-ipv6",
       "地址": "https://raw.githubusercontent.com/suxuang/myIPTV/main/ipv6.m3u",
-      "启用": true
+      "启用": false
     },
     {
       "名称": "ChinaIPTV-AutoUpdate",
@@ -45,7 +45,7 @@
     {
       "名称": "ChinaIPTV-GuoNei",
       "地址": "https://raw.githubusercontent.com/hujingguang/ChinaIPTV/main/cnTV2_GuoNei.m3u8",
-      "启用": true
+      "启用": false
     },
     {
       "名称": "yuanzl77-live",
@@ -55,17 +55,17 @@
     {
       "名称": "BurningC4-IPV4",
       "地址": "https://raw.githubusercontent.com/BurningC4/Chinese-IPTV/master/TV-IPV4.m3u",
-      "启用": true
+      "启用": false
     },
     {
       "名称": "lylehust-IPV6",
       "地址": "https://raw.githubusercontent.com/lylehust/Chinese-IPTV/master/TV-EDU-HAUST.m3u",
-      "启用": true
+      "启用": false
     },
     {
       "名称": "kaige-live",
       "地址": "https://raw.githubusercontent.com/kaige-cai/live/main/live.m3u",
-      "启用": true
+      "启用": false
     },
     {
       "名称": "fanmingming-ipv6",
