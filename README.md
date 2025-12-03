@@ -1,17 +1,8 @@
 # LiteIPTV
 
-> ⚠️ **项目暂停公告**
+> 🚧 **项目开发中**
 >
-> 由于技术原因，本项目暂停维护。
->
-> 经过大量测试发现，公网可用的 IPTV 源极其有限：
-> - 大部分源为运营商内网源，需要特定网络环境才能访问
-> - 咪咕等源的 token 时效性很短，测试通过后几分钟就会失效
-> - 地域限制源只允许特定省份 IP 访问
->
-> 最终能稳定播放的源不足 5%，无法满足项目初衷。
->
-> 感谢关注，如有更好的解决方案欢迎交流。
+> 本项目正在积极开发中，功能尚未完善，欢迎关注。
 
 ---
 
@@ -26,19 +17,17 @@
 - **精简**：只保留 CCTV 央视频道（1-17 + 5+）
 - **高清**：只接受 1080p 源
 - **稳定**：模拟真实播放测速，连续下载多个 ts 分片评估稳定性
-- **双栈**：同时提供 IPv4 和 IPv6 源
+- **IPv4**：仅提供 IPv4 源，兼容性更好
 - **自动更新**：每天凌晨自动检测，多轮测速取最优，仅在源变化时更新
 
 ## 订阅地址
 
 在支持 m3u 的播放器中添加订阅地址（如失效请尝试其他线路）：
 
-| 线路 | IPv4 | IPv6 |
-|------|------|------|
-| 线路1 | `https://mirror.ghproxy.com/https://raw.githubusercontent.com/MZSH-Tools/LiteIPTV/main/ipv4.m3u` | `https://mirror.ghproxy.com/https://raw.githubusercontent.com/MZSH-Tools/LiteIPTV/main/ipv6.m3u` |
-| 线路2 | `https://ghfast.top/https://raw.githubusercontent.com/MZSH-Tools/LiteIPTV/main/ipv4.m3u` | `https://ghfast.top/https://raw.githubusercontent.com/MZSH-Tools/LiteIPTV/main/ipv6.m3u` |
-| 线路3 | `https://gh-proxy.com/https://raw.githubusercontent.com/MZSH-Tools/LiteIPTV/main/ipv4.m3u` | `https://gh-proxy.com/https://raw.githubusercontent.com/MZSH-Tools/LiteIPTV/main/ipv6.m3u` |
-| 线路4 | `https://ghproxy.net/https://raw.githubusercontent.com/MZSH-Tools/LiteIPTV/main/ipv4.m3u` | `https://ghproxy.net/https://raw.githubusercontent.com/MZSH-Tools/LiteIPTV/main/ipv6.m3u` |
+| 线路 | 订阅地址 |
+|------|----------|
+| 线路1 | `https://ghfast.top/https://raw.githubusercontent.com/MZSH-Tools/LiteIPTV/main/iptv.m3u` |
+| 线路2 | `https://gh-proxy.com/https://raw.githubusercontent.com/MZSH-Tools/LiteIPTV/main/iptv.m3u` |
 
 > 目前仅收录 CCTV 央视频道
 
