@@ -2,24 +2,23 @@
 # -*- coding: utf-8 -*-
 """
 LiteIPTV - 精简稳定的 CCTV 直播源
-每小时运行，5轮测速取最优，仅在源变化时更新
+每小时运行，多轮测速取最优，仅在源变化时更新
 """
 
 import asyncio
-import aiohttp
 import json
+import os
 import re
-import time
 import subprocess
-from pathlib import Path
+import time
 from datetime import datetime
-from urllib.parse import urlparse
+from pathlib import Path
 
 # 项目根目录
-ROOT_DIR = Path(__file__).parent
+RootDir = Path(__file__).parent
 
 # CCTV 频道配置
-CHANNELS = {
+Channels = {
     "CCTV-1": {"name": "CCTV-1 综合", "tvg_name": "CCTV1", "logo": "https://live.fanmingming.cn/tv/CCTV1.png"},
     "CCTV-2": {"name": "CCTV-2 财经", "tvg_name": "CCTV2", "logo": "https://live.fanmingming.cn/tv/CCTV2.png"},
     "CCTV-3": {"name": "CCTV-3 综艺", "tvg_name": "CCTV3", "logo": "https://live.fanmingming.cn/tv/CCTV3.png"},
@@ -41,7 +40,7 @@ CHANNELS = {
 }
 
 # 频道匹配正则
-CHANNEL_PATTERNS = [
+ChannelPatterns = [
     (r"CCTV[-\s]?1(?:[^\d+]|$)", "CCTV-1"),
     (r"CCTV[-\s]?2(?:[^\d]|$)", "CCTV-2"),
     (r"CCTV[-\s]?3(?:[^\d]|$)", "CCTV-3"),
@@ -63,272 +62,316 @@ CHANNEL_PATTERNS = [
 ]
 
 
-def load_config():
+def LoadConfig():
     """加载配置文件"""
-    config_path = ROOT_DIR / "config.json"
-    if not config_path.exists():
+    path = RootDir / "config.json"
+    if not path.exists():
         print("Error: config.json not found")
         return None
-    with open(config_path, "r", encoding="utf-8") as f:
+    with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
 
-def fetch_source_sync(source):
-    """抓取单个上游源（使用 curl）"""
-    if not source.get("enabled", True):
+def SaveConfig(cfg):
+    """保存配置文件，内容相同则跳过"""
+    path = RootDir / "config.json"
+    content = json.dumps(cfg, ensure_ascii=False, indent=2)
+    if path.exists() and path.read_text(encoding="utf-8") == content:
+        return False
+    path.write_text(content, encoding="utf-8")
+    return True
+
+
+def FetchSource(src):
+    """抓取单个上游源，返回带 source 标记的频道列表"""
+    if not src.get("启用", True):
         return []
 
-    url = source["url"]
-    name = source.get("name", url)
-    print(f"Fetching: {name}")
+    url = src["地址"]
+    name = src.get("名称", url)
 
     try:
         result = subprocess.run(
-            ["curl", "-s", "-L", "--max-time", "60", url],
+            ["curl", "-s", "-L", "--max-time", "30", url],
             capture_output=True, text=True
         )
         if result.returncode == 0 and result.stdout:
-            channels = parse_m3u(result.stdout)
-            print(f"  Parsed: {len(channels)} channels")
-            return channels
-        else:
-            print(f"  Error: curl failed with code {result.returncode}")
+            items = ParseM3U(result.stdout)
+            for item in items:
+                item["source"] = name
+            print(f"Fetched {name}: {len(items)} channels")
+            return items
+        print(f"Fetch failed {name}: curl code {result.returncode}")
     except Exception as e:
-        print(f"Error fetching {name}: {type(e).__name__}: {e}")
+        print(f"Fetch error {name}: {type(e).__name__}")
     return []
 
 
-def parse_m3u(content):
-    """解析 m3u 文件，提取频道信息"""
-    channels = []
-    lines = content.strip().split("\n")
+async def FetchAllSources(sources):
+    """并行抓取所有上游源"""
+    loop = asyncio.get_event_loop()
+    tasks = [loop.run_in_executor(None, FetchSource, src) for src in sources]
+    results = await asyncio.gather(*tasks)
+    allItems = []
+    for items in results:
+        allItems.extend(items)
+    return allItems
 
+
+def ParseM3U(content):
+    """解析 m3u 文件"""
+    items = []
+    lines = content.strip().split("\n")
     i = 0
     while i < len(lines):
         line = lines[i].strip()
         if line.startswith("#EXTINF:"):
-            # 提取频道名
             match = re.search(r',(.+)$', line)
             if match and i + 1 < len(lines):
-                channel_name = match.group(1).strip()
+                name = match.group(1).strip()
                 url = lines[i + 1].strip()
-                # 清理 URL：移除 # 后面的内容
                 if "#" in url:
                     url = url.split("#")[0]
                 if url and not url.startswith("#"):
-                    channels.append({"name": channel_name, "url": url})
+                    items.append({"name": name, "url": url})
                 i += 1
         i += 1
+    return items
 
-    return channels
 
-
-def match_channel(name):
+def MatchChannel(name):
     """匹配频道名到标准频道 ID"""
-    name_upper = name.upper()
-    # 优先匹配 CCTV-5+
-    for pattern, channel_id in CHANNEL_PATTERNS:
-        if re.search(pattern, name_upper, re.IGNORECASE):
-            return channel_id
+    upper = name.upper()
+    for pattern, chId in ChannelPatterns:
+        if re.search(pattern, upper, re.IGNORECASE):
+            return chId
     return None
 
 
-def is_ipv6(url):
-    """判断 URL 是否为 IPv6"""
-    try:
-        parsed = urlparse(url)
-        host = parsed.hostname or ""
-        # IPv6 地址格式：[xxxx:xxxx:...] 或纯 IPv6
-        if host.startswith("[") or ":" in host:
-            return True
-        return False
-    except:
-        return False
+def FilterChannels(allItems):
+    """筛选 CCTV 频道，返回 {chId: [(url, source), ...]}"""
+    result = {ch: [] for ch in Channels}
+    for item in allItems:
+        chId = MatchChannel(item["name"])
+        if chId:
+            result[chId].append((item["url"], item.get("source", "unknown")))
+    return result
 
 
-def filter_channels(all_channels):
-    """筛选 CCTV 频道，分离 IPv4/IPv6"""
-    ipv4_channels = {ch: [] for ch in CHANNELS}
-    ipv6_channels = {ch: [] for ch in CHANNELS}
-
-    for item in all_channels:
-        channel_id = match_channel(item["name"])
-        if channel_id:
-            url = item["url"]
-            if is_ipv6(url):
-                ipv6_channels[channel_id].append(url)
-            else:
-                ipv4_channels[channel_id].append(url)
-
-    return ipv4_channels, ipv6_channels
-
-
-async def test_url(session, url, timeout=5):
-    """测试单个 URL 的响应时间"""
+def TestUrlCurl(url, ipVer, timeout=5):
+    """使用 curl 测试 URL（指定 IPv4 或 IPv6）"""
+    flag = "-4" if ipVer == 4 else "-6"
     try:
         start = time.time()
-        # 使用 GET 请求，只读取少量数据
-        async with session.get(url, timeout=aiohttp.ClientTimeout(total=timeout), allow_redirects=True) as resp:
-            if resp.status == 200:
-                # 尝试读取一小部分数据确认可用
-                await resp.content.read(1024)
-                return time.time() - start
+        result = subprocess.run(
+            ["curl", flag, "-s", "-L", "-o", "/dev/null", "-w", "%{http_code}",
+             "--max-time", str(timeout), url],
+            capture_output=True, text=True
+        )
+        if result.returncode == 0 and result.stdout.strip() == "200":
+            return time.time() - start
     except:
         pass
     return None
 
 
-async def test_url_rounds(session, url, rounds=5, interval=60):
-    """多轮测速，返回综合得分"""
-    results = []
+async def TestUrlDualStack(url, rounds=5, interval=60):
+    """双栈测速，分别测试 IPv4 和 IPv6"""
+    loop = asyncio.get_event_loop()
+    v4Results, v6Results = [], []
 
     for i in range(rounds):
         if i > 0:
             await asyncio.sleep(interval)
+        v4Task = loop.run_in_executor(None, TestUrlCurl, url, 4, 5)
+        v6Task = loop.run_in_executor(None, TestUrlCurl, url, 6, 5)
+        v4Time, v6Time = await asyncio.gather(v4Task, v6Task)
+        if v4Time is not None:
+            v4Results.append(v4Time)
+        if v6Time is not None:
+            v6Results.append(v6Time)
 
-        response_time = await test_url(session, url)
-        if response_time is not None:
-            results.append(response_time)
+    def CalcScore(results):
+        if not results:
+            return None
+        rate = len(results) / rounds
+        avg = sum(results) / len(results)
+        return {"rate": rate, "avg": avg, "score": rate / (avg + 0.1)}
 
-    if not results:
-        return None
-
-    # 计算综合得分：成功率 × 平均速度
-    success_rate = len(results) / rounds
-    avg_time = sum(results) / len(results)
-    # 得分越高越好：成功率高、响应时间短
-    score = success_rate / (avg_time + 0.1)
-
-    return {
-        "success_rate": success_rate,
-        "avg_time": avg_time,
-        "score": score
-    }
+    return {"v4": CalcScore(v4Results), "v6": CalcScore(v6Results)}
 
 
-async def select_best_sources(channels_dict, rounds=5, interval=60):
-    """为每个频道选择最优源"""
-    best_sources = {}
+async def SelectBestSources(chDict, rounds=5, interval=60, maxConcur=50):
+    """为每个频道选择最优源（全局并行双栈测速，限制并发数）"""
+    # 收集所有待测 URL
+    allTests = []
+    for chId, urlList in chDict.items():
+        seen = set()
+        for url, src in urlList:
+            if url not in seen:
+                seen.add(url)
+                allTests.append((chId, url, src))
 
-    async with aiohttp.ClientSession() as session:
-        for channel_id, urls in channels_dict.items():
-            if not urls:
-                continue
+    if not allTests:
+        return {}, {}, {}
 
-            print(f"Testing {channel_id}: {len(urls)} sources")
+    print(f"Global parallel testing: {len(allTests)} URLs, {rounds} rounds, max concurrency: {maxConcur}")
 
-            # 去重
-            unique_urls = list(set(urls))
+    # 使用信号量限制并发数
+    sem = asyncio.Semaphore(maxConcur)
 
-            # 并发测速所有源
-            tasks = [test_url_rounds(session, url, rounds, interval) for url in unique_urls]
-            results = await asyncio.gather(*tasks)
+    async def TestWithLimit(url, r, i):
+        async with sem:
+            return await TestUrlDualStack(url, r, i)
 
-            # 找出最优源
-            best_score = -1
-            best_url = None
+    tasks = [TestWithLimit(url, rounds, interval) for _, url, _ in allTests]
+    results = await asyncio.gather(*tasks)
 
-            for url, result in zip(unique_urls, results):
-                if result and result["score"] > best_score:
-                    best_score = result["score"]
-                    best_url = url
+    # 汇总结果
+    bestV4, bestV6 = {}, {}
+    srcStats = {}
+    chScores = {ch: {"v4": (-1, None), "v6": (-1, None)} for ch in Channels}
 
-            if best_url:
-                best_sources[channel_id] = best_url
-                print(f"  Best: {best_url[:50]}... (score: {best_score:.2f})")
+    for (chId, url, src), result in zip(allTests, results):
+        if src not in srcStats:
+            srcStats[src] = {"total": 0, "connected": 0}
+        srcStats[src]["total"] += 1
 
-    return best_sources
+        v4 = result.get("v4")
+        v6 = result.get("v6")
+
+        if v4 or v6:
+            srcStats[src]["connected"] += 1
+
+        if v4 and v4["score"] > chScores[chId]["v4"][0]:
+            chScores[chId]["v4"] = (v4["score"], url)
+        if v6 and v6["score"] > chScores[chId]["v6"][0]:
+            chScores[chId]["v6"] = (v6["score"], url)
+
+    # 提取最优结果
+    for chId in Channels:
+        v4Score, v4Url = chScores[chId]["v4"]
+        v6Score, v6Url = chScores[chId]["v6"]
+        if v4Url:
+            bestV4[chId] = v4Url
+        if v6Url:
+            bestV6[chId] = v6Url
+
+    print(f"Testing complete: {len(bestV4)} IPv4, {len(bestV6)} IPv6 channels found")
+
+    return bestV4, bestV6, srcStats
 
 
-def generate_m3u(sources, filename):
-    """生成 m3u 文件"""
+def DisableDeadSources(srcStats, cfg):
+    """禁用完全无法连接的上游源"""
+    disabled = []
+    for src in cfg.get("上游源", []):
+        name = src.get("名称", src["地址"])
+        stats = srcStats.get(name)
+        if stats and stats["total"] > 0 and stats["connected"] == 0:
+            if src.get("启用", True):
+                src["启用"] = False
+                disabled.append(name)
+                print(f"Disabled source: {name} (0/{stats['total']} connected)")
+    return disabled
+
+
+def GenerateM3U(sources, filename):
+    """生成 m3u 文件，内容相同则跳过"""
     lines = ['#EXTM3U x-tvg-url="https://epg.112114.xyz/pp.xml"']
-
-    # 按频道顺序输出
-    for channel_id in CHANNELS:
-        if channel_id in sources:
-            info = CHANNELS[channel_id]
-            extinf = f'#EXTINF:-1 tvg-name="{info["tvg_name"]}" tvg-logo="{info["logo"]}" group-title="央视频道",{info["name"]}'
-            lines.append(extinf)
-            lines.append(sources[channel_id])
+    for chId in Channels:
+        if chId in sources:
+            info = Channels[chId]
+            lines.append(f'#EXTINF:-1 tvg-name="{info["tvg_name"]}" tvg-logo="{info["logo"]}" group-title="央视频道",{info["name"]}')
+            lines.append(sources[chId])
 
     content = "\n".join(lines) + "\n"
+    path = RootDir / filename
 
-    filepath = ROOT_DIR / filename
-    filepath.write_text(content, encoding="utf-8")
+    if path.exists() and path.read_text(encoding="utf-8") == content:
+        return False
+    path.write_text(content, encoding="utf-8")
+    return True
 
-    return content
 
-
-def has_changes():
-    """检查是否有文件变化"""
-    result = subprocess.run(
-        ["git", "diff", "--name-only", "ipv4.m3u", "ipv6.m3u"],
-        capture_output=True, text=True, cwd=ROOT_DIR
+def HasChanges():
+    """检查是否有文件变化（包括未跟踪的新文件）"""
+    # 检查已跟踪文件的修改
+    diff = subprocess.run(
+        ["git", "diff", "--name-only", "ipv4.m3u", "ipv6.m3u", "config.json"],
+        capture_output=True, text=True, cwd=RootDir
     )
-    return bool(result.stdout.strip())
+    # 检查未跟踪的新文件
+    untracked = subprocess.run(
+        ["git", "ls-files", "--others", "--exclude-standard", "ipv4.m3u", "ipv6.m3u"],
+        capture_output=True, text=True, cwd=RootDir
+    )
+    return bool(diff.stdout.strip() or untracked.stdout.strip())
 
 
-def commit_and_push():
+def CommitAndPush():
     """提交并推送变更"""
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
-    commit_msg = f"update: {now}"
-
-    subprocess.run(["git", "add", "ipv4.m3u", "ipv6.m3u"], cwd=ROOT_DIR)
-    subprocess.run(["git", "commit", "-m", commit_msg], cwd=ROOT_DIR)
-    subprocess.run(["git", "push"], cwd=ROOT_DIR)
-
-    print(f"Pushed: {commit_msg}")
+    msg = f"update: {now}"
+    subprocess.run(["git", "add", "ipv4.m3u", "ipv6.m3u", "config.json"], cwd=RootDir)
+    subprocess.run(["git", "commit", "-m", msg], cwd=RootDir)
+    subprocess.run(["git", "push"], cwd=RootDir)
+    print(f"Pushed: {msg}")
 
 
-async def main():
+async def Main():
     """主函数"""
     print(f"=== LiteIPTV Start: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===")
 
-    # 加载配置
-    config = load_config()
-    if not config:
+    cfg = LoadConfig()
+    if not cfg:
         return
 
-    # 抓取所有上游源
-    all_channels = []
-    for source in config.get("sources", []):
-        channels = fetch_source_sync(source)
-        all_channels.extend(channels)
-
-    print(f"Total channels fetched: {len(all_channels)}")
+    # 并行抓取所有上游源
+    print("--- Fetching sources ---")
+    allItems = await FetchAllSources(cfg.get("上游源", []))
+    print(f"Total channels fetched: {len(allItems)}")
 
     # 筛选 CCTV 频道
-    ipv4_channels, ipv6_channels = filter_channels(all_channels)
+    chDict = FilterChannels(allItems)
+    totalUrls = sum(len(urls) for urls in chDict.values())
+    print(f"CCTV channels: {totalUrls} sources")
 
-    ipv4_count = sum(len(urls) for urls in ipv4_channels.values())
-    ipv6_count = sum(len(urls) for urls in ipv6_channels.values())
-    print(f"CCTV channels: IPv4={ipv4_count}, IPv6={ipv6_count}")
+    # 读取测速配置
+    settings = cfg.get("设置", {})
+    rounds = settings.get("测速轮数", 5)
+    interval = settings.get("测速间隔秒", 60)
+    autoDisable = settings.get("自动禁用失效源", True)
 
-    # 测速选优（5轮，每轮间隔1分钟）
-    # 可通过环境变量 QUICK_TEST=1 进行快速测试
-    import os
+    # 快速测试模式
     if os.environ.get("QUICK_TEST"):
         rounds, interval = 1, 1
         print("\n[Quick test mode]")
     else:
-        rounds, interval = 5, 60
+        print(f"\n[Test config: {rounds} rounds, {interval}s interval]")
 
-    print("\n--- Testing IPv4 sources ---")
-    best_ipv4 = await select_best_sources(ipv4_channels, rounds=rounds, interval=interval)
+    print("\n--- Dual-stack testing ---")
+    bestV4, bestV6, srcStats = await SelectBestSources(chDict, rounds, interval)
 
-    print("\n--- Testing IPv6 sources ---")
-    best_ipv6 = await select_best_sources(ipv6_channels, rounds=rounds, interval=interval)
+    # 禁用失效源
+    disabled = []
+    if autoDisable:
+        disabled = DisableDeadSources(srcStats, cfg)
 
     # 生成 m3u 文件
-    generate_m3u(best_ipv4, "ipv4.m3u")
-    generate_m3u(best_ipv6, "ipv6.m3u")
+    GenerateM3U(bestV4, "ipv4.m3u")
+    GenerateM3U(bestV6, "ipv6.m3u")
 
-    print(f"\nGenerated: ipv4.m3u ({len(best_ipv4)} channels), ipv6.m3u ({len(best_ipv6)} channels)")
+    # 保存配置
+    if disabled:
+        SaveConfig(cfg)
+        print(f"Config updated: {len(disabled)} sources disabled")
+
+    print(f"\nGenerated: ipv4.m3u ({len(bestV4)} channels), ipv6.m3u ({len(bestV6)} channels)")
 
     # 检查变化并提交
-    if has_changes():
-        commit_and_push()
+    if HasChanges():
+        CommitAndPush()
     else:
         print("No changes detected, skip push")
 
@@ -336,4 +379,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(Main())

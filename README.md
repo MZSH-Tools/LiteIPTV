@@ -13,7 +13,7 @@
 - **双栈**：同时提供 IPv4 和 IPv6 源
 - **自动更新**：每小时自动检测，5 轮测速取最优，仅在源变化时更新
 
-## 使用方法
+## 订阅地址
 
 在支持 m3u 的播放器中添加订阅地址（如失效请尝试其他线路）：
 
@@ -48,6 +48,97 @@
 | CCTV-15 | 音乐 |
 | CCTV-16 | 奥林匹克 |
 | CCTV-17 | 农业农村 |
+
+---
+
+## 自建部署
+
+如果你想自己部署这个项目，请按以下步骤操作。
+
+### 环境要求
+
+- macOS（使用 launchd 守护进程）
+- Python 3.x
+- curl
+- git
+
+### 配置文件
+
+编辑 `config.json`：
+
+```json
+{
+  "设置": {
+    "测速轮数": 5,
+    "测速间隔秒": 60,
+    "自动禁用失效源": true
+  },
+  "上游源": [
+    {
+      "名称": "source-name",
+      "地址": "https://example.com/iptv.m3u",
+      "启用": true
+    }
+  ]
+}
+```
+
+| 参数 | 说明 |
+|------|------|
+| 测速轮数 | 每个 URL 测试的次数 |
+| 测速间隔秒 | 每轮测速之间的等待时间 |
+| 自动禁用失效源 | 上游源所有频道失效时自动禁用 |
+
+### 快速验证
+
+```bash
+# 方式一：使用测试脚本
+./test.sh
+
+# 方式二：直接运行（快速模式：1轮测速）
+QUICK_TEST=1 python3 main.py
+
+# 方式三：完整运行
+python3 main.py
+```
+
+### 安装守护进程
+
+1. 修改 `com.liteiptv.update.plist` 中的路径：
+   - `ProgramArguments`: Python 路径和 main.py 路径
+   - `WorkingDirectory`: 项目目录
+   - `StandardOutPath` / `StandardErrorPath`: 日志路径
+
+2. 安装守护进程：
+
+```bash
+# 复制到 LaunchAgents
+cp com.liteiptv.update.plist ~/Library/LaunchAgents/
+
+# 加载任务（立即运行一次，之后每小时运行）
+launchctl load ~/Library/LaunchAgents/com.liteiptv.update.plist
+
+# 查看状态
+launchctl list | grep liteiptv
+
+# 手动触发一次
+launchctl start com.liteiptv.update
+
+# 查看日志
+tail -f logs/output.log
+tail -f logs/error.log
+```
+
+3. 卸载守护进程：
+
+```bash
+launchctl unload ~/Library/LaunchAgents/com.liteiptv.update.plist
+rm ~/Library/LaunchAgents/com.liteiptv.update.plist
+```
+
+### 运行频率
+
+默认每小时运行一次（`StartInterval: 3600`）。如需修改，编辑 plist 文件中的 `StartInterval` 值（单位：秒）。
 
 ## 许可证
 
