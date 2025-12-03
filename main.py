@@ -688,7 +688,6 @@ async def RunOnce():
     else:
         Log(f"\n[测速配置: {rounds}轮, 间隔{interval}秒, 超时{timeout}秒, 并发{maxConcur}]")
 
-    Log("\n--- 双栈测速 ---")
     bestV4, bestV6, srcStats = await SelectBestSources(chDict, rounds, interval, timeout, maxConcur)
 
     # 禁用失效源

@@ -73,7 +73,7 @@
     {
       "名称": "fanmingming-ipv6",
       "地址": "https://live.fanmingming.cn/tv/m3u/ipv6.m3u",
-      "启用": true
+      "启用": false
     }
   ]
 }
