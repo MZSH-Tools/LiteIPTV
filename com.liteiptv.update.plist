@@ -7,25 +7,23 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/opt/homebrew/Caskroom/miniconda/base/bin/python3</string>
+        <string>/opt/homebrew/Caskroom/miniconda/base/envs/LiteIPTV/bin/python3</string>
         <string>/Users/mengzhishanghun/Documents/GitHub/LiteIPTV/main.py</string>
     </array>
 
     <key>WorkingDirectory</key>
     <string>/Users/mengzhishanghun/Documents/GitHub/LiteIPTV</string>
 
-    <key>StartCalendarInterval</key>
-    <dict>
-        <key>Hour</key>
-        <integer>3</integer>
-        <key>Minute</key>
-        <integer>0</integer>
-    </dict>
+    <key>StartInterval</key>
+    <integer>3600</integer>
 
     <key>StandardOutPath</key>
     <string>/dev/null</string>
 
     <key>StandardErrorPath</key>
     <string>/dev/null</string>
+
+    <key>RunAtLoad</key>
+    <true/>
 </dict>
 </plist>

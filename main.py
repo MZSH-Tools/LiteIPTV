@@ -8,8 +8,10 @@ LiteIPTV - 精简稳定的 CCTV 直播源
 import asyncio
 import json
 import os
+import random
 import re
 import subprocess
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -20,8 +22,12 @@ import aiohttp
 # 项目根目录
 RootDir = Path(__file__).parent
 
-# 日志目录
-LogDir = Path.home() / "Library/Logs/LiteIPTV"
+# 日志目录（跨平台）
+import sys
+if sys.platform == "win32":
+    LogDir = RootDir / "Logs"
+else:
+    LogDir = Path.home() / "Library/Logs/LiteIPTV"
 LogFile = LogDir / "LiteIPTV.log"
 
 
@@ -97,55 +103,58 @@ def SaveConfig(cfg):
     return True
 
 
-def FetchSource(src, maxRetry, retryDelay):
-    """抓取单个上游源，失败时重试，返回 (items, success)"""
-    if not src.get("启用", True):
-        return [], True  # 未启用不算失败
+def GetSourceName(url):
+    """从 URL 提取源名称"""
+    try:
+        parsed = urlparse(url)
+        host = parsed.hostname or ""
+        # GitHub 链接显示用户名
+        if "githubusercontent.com" in host or "github.com" in host:
+            parts = parsed.path.split("/")
+            if len(parts) >= 2:
+                return parts[1]
+        # 其他链接显示域名
+        return host.replace("www.", "")
+    except:
+        pass
+    return url[:30]
 
-    url = src["地址"]
-    name = src.get("名称", url)
+
+async def FetchSource(url, maxRetry, retryDelay):
+    """抓取单个上游源，失败时重试，返回 (url, items, success)"""
+    name = GetSourceName(url)
 
     for attempt in range(maxRetry):
         try:
-            result = subprocess.run(
-                ["curl", "-s", "-L", "--noproxy", "*", "--max-time", "30", url],
-                capture_output=True, text=True
-            )
-            if result.returncode == 0 and result.stdout:
-                items = ParseM3U(result.stdout)
-                for item in items:
-                    item["source"] = name
-                Log(f"已抓取 {name}: {len(items)} 个频道")
-                return items, True
+            connector = aiohttp.TCPConnector()
+            async with aiohttp.ClientSession(connector=connector, trust_env=False) as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=30), ssl=False) as resp:
+                    if resp.status == 200:
+                        content = await resp.text()
+                        if content:
+                            items = ParseM3U(content)
+                            for item in items:
+                                item["source"] = name
+                            Log(f"已抓取 {name}: {len(items)} 个频道")
+                            return url, items, True
             if attempt < maxRetry - 1:
-                time.sleep(retryDelay)
+                await asyncio.sleep(retryDelay)
         except:
             if attempt < maxRetry - 1:
-                time.sleep(retryDelay)
+                await asyncio.sleep(retryDelay)
 
     Log(f"抓取失败 {name}: {maxRetry} 次尝试均失败")
-    return [], False
+    return url, [], False
 
 
-async def FetchAllSources(sources, cfg, maxRetry, retryDelay, autoDisable=True):
-    """并行抓取所有上游源，抓取失败的源自动禁用"""
-    loop = asyncio.get_event_loop()
-    tasks = [loop.run_in_executor(None, FetchSource, src, maxRetry, retryDelay) for src in sources]
+async def FetchAllSources(sources, maxRetry, retryDelay):
+    """并行抓取所有上游源"""
+    tasks = [FetchSource(url, maxRetry, retryDelay) for url in sources]
     results = await asyncio.gather(*tasks)
 
     allItems = []
-    disabled = []
-    for src, (items, success) in zip(sources, results):
+    for url, items, success in results:
         allItems.extend(items)
-        # 抓取失败则禁用
-        if autoDisable and not success and src.get("启用", True):
-            src["启用"] = False
-            disabled.append(src.get("名称", src["地址"]))
-            Log(f"已禁用抓取失败源: {src.get('名称', src['地址'])}")
-
-    # 保存配置
-    if disabled:
-        SaveConfig(cfg)
 
     return allItems
 
@@ -276,6 +285,70 @@ def ParseM3u8Segments(content, baseUrl):
     return segments
 
 
+def ParseResolution(content):
+    """从 Master Playlist 解析最高分辨率，返回高度值（如 1080, 720）"""
+    if "#EXT-X-STREAM-INF" not in content:
+        return 0
+
+    maxHeight = 0
+    for line in content.strip().split("\n"):
+        if "#EXT-X-STREAM-INF" in line:
+            match = re.search(r'RESOLUTION=(\d+)x(\d+)', line)
+            if match:
+                height = int(match.group(2))
+                maxHeight = max(maxHeight, height)
+    return maxHeight
+
+
+async def GetResolutionFromSegment(segUrl, timeout=10):
+    """从 ts 分片获取分辨率（使用 ffprobe）
+    返回值：
+        > 0: 视频高度（如 1080, 720）
+        0: 未知（ffprobe 失败但可能有视频）
+        -1: 确认无视频流（只有音频）
+    """
+    try:
+        # 下载分片到临时文件
+        connector = aiohttp.TCPConnector()
+        async with aiohttp.ClientSession(connector=connector, trust_env=False) as session:
+            async with session.get(segUrl, timeout=aiohttp.ClientTimeout(total=timeout), ssl=False) as resp:
+                if resp.status != 200:
+                    return 0
+                data = await resp.read()
+                if len(data) < 1000:
+                    return 0
+
+        # 写入临时文件
+        with tempfile.NamedTemporaryFile(suffix=".ts", delete=False) as f:
+            f.write(data)
+            tmpPath = f.name
+
+        try:
+            # 先检查是否有视频流
+            checkResult = subprocess.run(
+                ["ffprobe", "-v", "error", "-select_streams", "v",
+                 "-show_entries", "stream=codec_type", "-of", "csv=p=0", tmpPath],
+                capture_output=True, text=True, timeout=5
+            )
+            # 没有视频流（只有音频）
+            if checkResult.returncode == 0 and not checkResult.stdout.strip():
+                return -1
+
+            # 有视频流，获取分辨率
+            result = subprocess.run(
+                ["ffprobe", "-v", "error", "-select_streams", "v:0",
+                 "-show_entries", "stream=height", "-of", "csv=p=0", tmpPath],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return int(result.stdout.strip())
+        finally:
+            os.unlink(tmpPath)
+    except:
+        pass
+    return 0
+
+
 async def TestUrl(url, timeout=30):
     """测试单个 URL：下载前 5 个 ts 分片（参考 iptv-api）"""
     # 获取 m3u8 内容
@@ -335,53 +408,64 @@ async def TestUrl(url, timeout=30):
     }
 
 
-def CalcScore(results, rounds):
-    """综合评分算法"""
-    if not results:
-        return None
+async def DeepVerify(url, timeout=10):
+    """深度验证：下载 3 个随机分片，返回 (是否通过, 分辨率高度)
+    分辨率返回值：
+        > 0: 有视频，返回高度
+        0: 未知（可能有视频）
+        -1: 只有音频，无视频（会被过滤）
+    """
+    content = await AioFetch(url, timeout=5)
+    if not content:
+        return False, 0
 
-    successRate = len(results) / rounds
-    speeds = [r["speed"] for r in results]
-    ttfbs = [r["ttfb"] for r in results]
-    segStds = [r.get("speedStd", 0) for r in results]
+    # 尝试从 Master Playlist 解析分辨率
+    resolution = ParseResolution(content)
 
-    avgSpeed = sum(speeds) / len(speeds)
-    avgTtfb = sum(ttfbs) / len(ttfbs)
-    avgSegStd = sum(segStds) / len(segStds)
+    # 处理 Master Playlist
+    if "#EXT-X-STREAM-INF" in content:
+        lines = content.strip().split("\n")
+        for i, line in enumerate(lines):
+            if "#EXT-X-STREAM-INF" in line and i + 1 < len(lines):
+                subUrl = lines[i + 1].strip()
+                if not subUrl.startswith("http"):
+                    subUrl = urljoin(url, subUrl)
+                content = await AioFetch(subUrl, timeout=5)
+                if not content:
+                    return False, 0
+                url = subUrl
+                break
 
-    # 轮次间速率标准差
-    if len(speeds) > 1:
-        variance = sum((s - avgSpeed) ** 2 for s in speeds) / len(speeds)
-        roundStd = variance ** 0.5
-    else:
-        roundStd = 0
+    if "#EXTINF" not in content:
+        return False, 0
 
-    # 分片稳定性评分
-    segStabilityScore = 100 - min(100, (avgSegStd / (avgSpeed + 1)) * 100)
+    segments = ParseM3u8Segments(content, url)
+    if len(segments) < 3:
+        return False, 0
 
-    # 轮次稳定性评分
-    roundStabilityScore = 100 - min(100, (roundStd / (avgSpeed + 1)) * 100)
+    # 随机选择 3 个不同分片
+    testSegs = random.sample(segments, min(3, len(segments)))
 
-    # 带宽评分（2Mbps = 250KB/s 满分）
-    bandwidthScore = min(100, (avgSpeed / 250000) * 100)
+    # 并发下载，全部成功才算通过
+    tasks = [AioDownload(seg, timeout=timeout) for seg in testSegs]
+    results = await asyncio.gather(*tasks)
 
-    # 连接评分（0.5秒内满分）
-    connectScore = max(0, 100 - avgTtfb * 200)
+    for r in results:
+        if not r or r["bytes"] < 1000:
+            return False, 0
 
-    # 综合评分 = 各项加权 × 成功率惩罚
-    score = (segStabilityScore * 0.3 + roundStabilityScore * 0.2 +
-             bandwidthScore * 0.3 + connectScore * 0.2) * (successRate ** 2)
+    # 如果没有从 Master Playlist 获取到分辨率，用 ffprobe 解析分片
+    if resolution == 0 and segments:
+        resolution = await GetResolutionFromSegment(segments[0], timeout=10)
+        # 只有音频没有视频，标记为失败
+        if resolution == -1:
+            return False, -1
 
-    return {
-        "score": score,
-        "avgSpeed": avgSpeed,
-        "avgTtfb": avgTtfb,
-        "successRate": successRate
-    }
+    return True, resolution
 
 
-async def SelectBestSources(chDict, rounds=3, interval=60, timeout=30, maxConcur=100):
-    """为每个频道选择最优源（参考 iptv-api：缓存 + 多轮测速）"""
+async def SelectBestSources(chDict, timeout=30, maxConcur=100, hdLatencyLimit=2):
+    """为每个频道选择最优源"""
     # 构建 URL -> [(chId, src), ...] 映射，实现全局去重
     urlMap = {}
     for chId, urlList in chDict.items():
@@ -391,14 +475,14 @@ async def SelectBestSources(chDict, rounds=3, interval=60, timeout=30, maxConcur
             urlMap[url].append((chId, src))
 
     if not urlMap:
-        return {}, {}
+        return {}
 
     allUrls = list(urlMap.keys())
     Log(f"待测试: {len(allUrls)} 个唯一 URL")
-
-    # 第一步：快速连通性检查
-    Log(f"--- 连通性检查 ---")
     sem = asyncio.Semaphore(maxConcur)
+
+    # 第一步：快速测试（m3u8 有内容）
+    Log(f"--- 快速测试 ---")
 
     async def quickCheck(url):
         async with sem:
@@ -406,97 +490,156 @@ async def SelectBestSources(chDict, rounds=3, interval=60, timeout=30, maxConcur
             return content is not None and ("#EXTINF" in content or "#EXT-X-STREAM-INF" in content)
 
     tasks = [quickCheck(url) for url in allUrls]
-    connResults = await asyncio.gather(*tasks)
+    results = await asyncio.gather(*tasks)
+    quickUrls = [url for url, ok in zip(allUrls, results) if ok]
+    Log(f"通过: {len(quickUrls)}/{len(allUrls)}")
 
-    validUrls = [url for url, ok in zip(allUrls, connResults) if ok]
-    Log(f"可连接: {len(validUrls)}/{len(allUrls)}")
+    if not quickUrls:
+        Log("没有可用源")
+        return {}
 
-    if not validUrls:
+    # 第二步：连通+测速（下载分片验证连通性，同时测速）
+    Log(f"--- 连通测速 ---")
+
+    async def connectAndTest(url):
+        """下载分片验证连通性，同时返回测速数据"""
+        async with sem:
+            return await TestUrl(url, timeout)
+
+    tasks = [connectAndTest(url) for url in quickUrls]
+    results = await asyncio.gather(*tasks)
+
+    urlScores = {}
+    for url, result in zip(quickUrls, results):
+        if result:
+            urlScores[url] = {"ttfb": result["ttfb"], "speed": result["speed"]}
+
+    Log(f"通过: {len(urlScores)}/{len(quickUrls)}")
+
+    if not urlScores:
         Log("没有可连接的源")
-        return {}, {}
+        return {}
 
-    # 第二步：多轮测速
-    Log(f"--- 测速 ({rounds}轮, 间隔{interval}秒) ---")
-    urlResults = {url: [] for url in validUrls}
+    # 第三步：所有频道并行深度验证（优先 1080p）
+    Log(f"--- 深度验证 ---")
 
-    for r in range(rounds):
-        if r > 0:
-            Log(f"等待 {interval} 秒...")
-            await asyncio.sleep(interval)
+    audioOnlyCount = 0  # 统计纯音频源数量
 
-        Log(f"第 {r + 1}/{rounds} 轮: 测速 {len(validUrls)} 个源...")
+    async def verifyChannel(chId):
+        """单频道验证：按延迟排序，优先 1080p，延迟超限用备选"""
+        nonlocal audioOnlyCount
+        candidates = []
+        for url, src in chDict.get(chId, []):
+            if url in urlScores:
+                data = urlScores[url]
+                candidates.append((data["ttfb"], url))
 
-        async def testOne(url):
-            async with sem:
-                return await TestUrl(url, timeout)
+        if not candidates:
+            return None
 
-        tasks = [testOne(url) for url in validUrls]
-        results = await asyncio.gather(*tasks)
+        # 按延迟升序排序
+        candidates.sort(key=lambda x: x[0])
 
-        for url, result in zip(validUrls, results):
-            if result:
-                urlResults[url].append(result)
+        backup = None
 
-    # 第三步：计算评分并选择最优
+        for ttfb, url in candidates:
+            # 延迟超过阈值且有备选，停止找 1080p
+            if ttfb > hdLatencyLimit and backup:
+                break
+
+            passed, resolution = await DeepVerify(url, timeout=10)
+            if passed:
+                if resolution >= 1080:
+                    return (chId, url, resolution)
+                elif backup is None:
+                    backup = (chId, url, resolution)
+            elif resolution == -1:
+                # 纯音频源，统计但不使用
+                audioOnlyCount += 1
+
+        return backup
+
+    # 所有频道并行验证
+    tasks = [verifyChannel(chId) for chId in Channels]
+    results = await asyncio.gather(*tasks)
+
     best = {}
-    srcStats = {}
-    chScores = {ch: (-1, None) for ch in Channels}
+    bestResolutions = {}
+    for r in results:
+        if r:
+            chId, url, resolution = r
+            best[chId] = url
+            bestResolutions[chId] = resolution
 
-    for url in validUrls:
-        scoreData = CalcScore(urlResults[url], rounds)
-        if not scoreData:
-            continue
+    # 输出统计
+    if audioOnlyCount > 0:
+        Log(f"过滤纯音频源: {audioOnlyCount} 个")
 
-        score = scoreData["score"]
+    resStats = {}
+    for chId, res in bestResolutions.items():
+        label = f"{res}p" if res > 0 else "未知"
+        resStats[label] = resStats.get(label, 0) + 1
+    resInfo = ", ".join(f"{k}:{v}" for k, v in sorted(resStats.items(), reverse=True))
+    Log(f"选出最优源: {len(best)}/{len(Channels)} 个频道 ({resInfo})")
 
-        # 将结果分配给所有相关频道
-        for chId, src in urlMap[url]:
-            # 统计上游源连通情况
-            if src not in srcStats:
-                srcStats[src] = {"total": 0, "connected": 0}
-            srcStats[src]["total"] += 1
-            srcStats[src]["connected"] += 1
-
-            # 更新频道最优源
-            if score > chScores[chId][0]:
-                chScores[chId] = (score, url)
-
-    # 提取最优结果
-    for chId in Channels:
-        _, bestUrl = chScores[chId]
-        if bestUrl:
-            best[chId] = bestUrl
-
-    Log(f"选出最优源: {len(best)}/{len(Channels)} 个频道")
-    return best, srcStats
+    return best
 
 
-def DisableDeadSources(srcStats, cfg):
-    """禁用完全无法连接的上游源"""
-    disabled = []
-    for src in cfg.get("上游源", []):
-        name = src.get("名称", src["地址"])
-        stats = srcStats.get(name)
-        if stats and stats["total"] > 0 and stats["connected"] == 0:
-            if src.get("启用", True):
-                src["启用"] = False
-                disabled.append(name)
-                Log(f"已禁用失效源: {name} (0/{stats['total']} 连通)")
-    return disabled
+def LoadExistingM3U(filename):
+    """读取现有的 m3u 文件，返回 {chId: url}"""
+    path = RootDir / filename
+    if not path.exists():
+        return {}
+
+    existing = {}
+    content = path.read_text(encoding="utf-8")
+    lines = content.strip().split("\n")
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        if line.startswith("#EXTINF:"):
+            # 匹配频道名
+            match = re.search(r',(.+)$', line)
+            if match and i + 1 < len(lines):
+                name = match.group(1).strip()
+                url = lines[i + 1].strip()
+                # 从频道名匹配 chId
+                chId = MatchChannel(name)
+                if chId and url and not url.startswith("#"):
+                    existing[chId] = url
+                i += 1
+        i += 1
+    return existing
 
 
 def GenerateM3U(sources, filename):
-    """生成 m3u 文件，内容相同或无源则跳过"""
-    if not sources:
+    """生成 m3u 文件，保留旧源（新源未覆盖的频道）"""
+    # 读取现有源
+    existing = LoadExistingM3U(filename)
+    preserved = 0
+
+    # 合并：新源优先，无新源则保留旧源
+    merged = {}
+    for chId in Channels:
+        if chId in sources:
+            merged[chId] = sources[chId]
+        elif chId in existing:
+            merged[chId] = existing[chId]
+            preserved += 1
+
+    if not merged:
         Log(f"跳过 {filename}: 无可用源")
         return False
 
+    if preserved > 0:
+        Log(f"保留旧源: {preserved} 个频道")
+
     lines = ['#EXTM3U x-tvg-url="https://epg.112114.xyz/pp.xml"']
     for chId in Channels:
-        if chId in sources:
+        if chId in merged:
             info = Channels[chId]
             lines.append(f'#EXTINF:-1 tvg-name="{info["tvg_name"]}" tvg-logo="{info["logo"]}" group-title="央视频道",{info["name"]}')
-            lines.append(sources[chId])
+            lines.append(merged[chId])
 
     content = "\n".join(lines) + "\n"
     path = RootDir / filename
@@ -508,9 +651,9 @@ def GenerateM3U(sources, filename):
 
 
 def HasChanges():
-    """检查是否有文件变化"""
+    """检查 iptv.m3u 是否有变化"""
     diff = subprocess.run(
-        ["git", "diff", "--name-only", "iptv.m3u", "config.json"],
+        ["git", "diff", "--name-only", "iptv.m3u"],
         capture_output=True, text=True, cwd=RootDir
     )
     untracked = subprocess.run(
@@ -521,10 +664,10 @@ def HasChanges():
 
 
 def CommitAndPush():
-    """提交并推送变更"""
+    """提交并推送 iptv.m3u"""
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     msg = f"update: {now}"
-    subprocess.run(["git", "add", "iptv.m3u", "config.json"], cwd=RootDir)
+    subprocess.run(["git", "add", "iptv.m3u"], cwd=RootDir)
     subprocess.run(["git", "commit", "-m", msg], cwd=RootDir)
     subprocess.run(["git", "push"], cwd=RootDir)
     Log(f"已推送: {msg}")
@@ -542,48 +685,38 @@ async def RunOnce():
     settings = cfg.get("设置", {})
     maxRetry = settings.get("抓取重试次数", 3)
     retryDelay = settings.get("抓取重试间隔秒", 3)
-    rounds = settings.get("测速轮数", 3)
-    interval = settings.get("测速间隔秒", 300)
     timeout = settings.get("测速超时秒", 30)
     maxConcur = settings.get("最大并发数", 500)
-    autoDisable = settings.get("自动禁用失效源", True)
-
-    # 快速测试模式
-    quickTest = os.environ.get("QUICK_TEST")
-    if quickTest:
-        rounds, interval = 1, 1
-        autoDisable = False
-        Log("[快速测试模式]\n")
+    hdLatencyLimit = settings.get("高清延迟阈值毫秒", 2000) / 1000  # 转换为秒
 
     # 并行抓取所有上游源
     Log("--- 抓取上游源 ---")
-    allItems = await FetchAllSources(cfg.get("上游源", []), cfg, maxRetry, retryDelay, autoDisable)
+    allItems = await FetchAllSources(cfg.get("上游源", []), maxRetry, retryDelay)
     Log(f"共抓取 {len(allItems)} 个频道")
 
-    # 筛选 CCTV 频道（排除黑名单和 IPv6）
+    # 筛选 CCTV 频道（过滤黑名单和 IPv6）
     blacklist = cfg.get("黑名单", [])
     chDict = FilterChannels(allItems, blacklist)
+
+    # 合并散装源
+    customSources = cfg.get("散装源", {})
+    customCount = 0
+    for chId, urls in customSources.items():
+        if chId in chDict and urls:
+            for url in urls:
+                chDict[chId].append((url, "自定义"))
+                customCount += 1
+    if customCount > 0:
+        Log(f"添加散装源: {customCount} 个")
+
     totalUrls = sum(len(urls) for urls in chDict.values())
     uniqueUrls = len(set(url for urls in chDict.values() for url, _ in urls))
     Log(f"筛选出 CCTV 频道: {totalUrls} 个源 ({uniqueUrls} 个唯一)")
 
-    if not quickTest:
-        Log(f"\n[测速配置: {rounds}轮, 间隔{interval}秒, 超时{timeout}秒, 并发{maxConcur}]")
-
-    best, srcStats = await SelectBestSources(chDict, rounds, interval, timeout, maxConcur)
-
-    # 禁用失效源
-    disabled = []
-    if autoDisable:
-        disabled = DisableDeadSources(srcStats, cfg)
+    best = await SelectBestSources(chDict, timeout, maxConcur, hdLatencyLimit)
 
     # 生成 m3u 文件
     GenerateM3U(best, "iptv.m3u")
-
-    # 保存配置
-    if disabled:
-        SaveConfig(cfg)
-        Log(f"配置已更新: 禁用了 {len(disabled)} 个失效源")
 
     Log(f"\n生成完成: iptv.m3u ({len(best)} 个频道)")
 

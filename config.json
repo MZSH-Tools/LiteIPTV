@@ -2,61 +2,142 @@
   "设置": {
     "抓取重试次数": 3,
     "抓取重试间隔秒": 3,
-    "测速轮数": 3,
-    "测速间隔秒": 300,
     "测速超时秒": 30,
     "最大并发数": 500,
-    "自动禁用失效源": false
+    "高清延迟阈值毫秒": 2000
   },
   "黑名单": [
     "freetv.top",
     "hebtv.com"
   ],
   "上游源": [
-    {
-      "名称": "iptv-api",
-      "地址": "https://raw.githubusercontent.com/Guovin/iptv-api/gd/output/result.m3u",
-      "启用": true
-    },
-    {
-      "名称": "iptv-api-ipv4",
-      "地址": "https://raw.githubusercontent.com/Guovin/iptv-api/gd/output/ipv4/result.m3u",
-      "启用": true
-    },
-    {
-      "名称": "vbskycn-iptv4",
-      "地址": "https://raw.githubusercontent.com/vbskycn/iptv/master/tv/iptv4.m3u",
-      "启用": true
-    },
-    {
-      "名称": "YanG-Gather",
-      "地址": "https://raw.githubusercontent.com/YanG-1989/m3u/main/Gather.m3u",
-      "启用": true
-    },
-    {
-      "名称": "suxuang-ipv4",
-      "地址": "https://raw.githubusercontent.com/suxuang/myIPTV/main/ipv4.m3u",
-      "启用": true
-    },
-    {
-      "名称": "ChinaIPTV-AutoUpdate",
-      "地址": "https://raw.githubusercontent.com/hujingguang/ChinaIPTV/main/cnTV_AutoUpdate.m3u8",
-      "启用": true
-    },
-    {
-      "名称": "zbefine-iptv",
-      "地址": "https://raw.githubusercontent.com/zbefine/iptv/main/iptv.m3u",
-      "启用": true
-    },
-    {
-      "名称": "vamoschuck-TV",
-      "地址": "https://raw.githubusercontent.com/vamoschuck/TV/main/M3U",
-      "启用": true
-    },
-    {
-      "名称": "Kimentanm-aptv",
-      "地址": "https://raw.githubusercontent.com/Kimentanm/aptv/master/m3u/iptv.m3u",
-      "启用": true
-    }
-  ]
+    "https://raw.githubusercontent.com/Guovin/iptv-api/gd/output/result.m3u",
+    "https://raw.githubusercontent.com/Guovin/iptv-api/gd/output/ipv4/result.m3u",
+    "https://raw.githubusercontent.com/vbskycn/iptv/master/tv/iptv4.m3u",
+    "https://raw.githubusercontent.com/YanG-1989/m3u/main/Gather.m3u",
+    "https://raw.githubusercontent.com/suxuang/myIPTV/main/ipv4.m3u",
+    "https://raw.githubusercontent.com/hujingguang/ChinaIPTV/main/cnTV_AutoUpdate.m3u8",
+    "https://raw.githubusercontent.com/zbefine/iptv/main/iptv.m3u",
+    "https://raw.githubusercontent.com/vamoschuck/TV/main/M3U",
+    "https://raw.githubusercontent.com/Kimentanm/aptv/master/m3u/iptv.m3u",
+    "https://raw.githubusercontent.com/YueChan/Live/main/IPTV.m3u",
+    "https://raw.githubusercontent.com/BigBigGrandG/IPTV-URL/release/Gather.m3u",
+    "https://raw.githubusercontent.com/imDazui/Tvlist-awesome-m3u-m3u8/master/m3u/%E5%9B%BD%E5%86%85%E7%94%B5%E8%A7%86%E5%8F%B0202509.m3u",
+    "https://raw.githubusercontent.com/fanmingming/live/main/tv/m3u/global.m3u",
+    "https://raw.githubusercontent.com/kimcrowing/IPTV/master/index.m3u",
+    "https://raw.githubusercontent.com/joevess/IPTV/main/iptv.m3u8",
+    "https://raw.githubusercontent.com/joevess/IPTV/main/home.m3u8",
+    "http://175.178.251.183:6689/live.m3u",
+    "https://live.iptv-free.com/iptv/languages/zho.m3u",
+    "https://live.zbds.top/tv/iptv4.m3u",
+    "https://live.izbds.com/tv/iptv4.m3u",
+    "https://live.hacks.tools/tv/ipv4/categories/%E5%A4%AE%E8%A7%86%E9%A2%91%E9%81%93.m3u",
+    "https://live.hacks.tools/tv/iptv4.m3u",
+    "https://epg.pw/test_channels.m3u"
+  ],
+  "散装源": {
+    "CCTV-1": [
+      "http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221226016/index.m3u8",
+      "http://183.251.61.207/PLTV/88888888/224/3221225922/index.m3u8",
+      "http://39.134.24.162/dbiptv.sn.chinamobile.com/PLTV/88888890/224/3221225804/index.m3u8",
+      "http://112.46.105.20:8009/hls/501/index.m3u8",
+      "http://58.57.40.22:9901/tsfile/live/0001_1.m3u8",
+      "http://223.110.242.130:6610/gitv/live1/G_CCTV-1-CQ/G_CCTV-1-CQ/",
+      "http://ott.mobaibox.com/PLTV/3/224/3221227896/index.m3u8"
+    ],
+    "CCTV-2": [
+      "http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221225588/index.m3u8",
+      "http://183.251.61.207/PLTV/88888888/224/3221225923/index.m3u8",
+      "http://39.134.24.162/dbiptv.sn.chinamobile.com/PLTV/88888890/224/3221226195/index.m3u8",
+      "http://112.46.105.20:8009/hls/502/index.m3u8"
+    ],
+    "CCTV-3": [
+      "http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221226021/index.m3u8",
+      "http://39.134.24.166/dbiptv.sn.chinamobile.com/PLTV/88888888/224/3221226397/1.m3u8",
+      "http://ivi.bupt.edu.cn/hls/cctv3hd.m3u8",
+      "http://112.46.105.20:8009/hls/3/index.m3u8"
+    ],
+    "CCTV-4": [
+      "http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221226428/index.m3u8",
+      "http://183.251.61.207/PLTV/88888888/224/3221225802/index.m3u8",
+      "http://112.46.105.20:8009/hls/4/index.m3u8"
+    ],
+    "CCTV-5": [
+      "http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221226019/index.m3u8",
+      "http://39.134.24.161/dbiptv.sn.chinamobile.com/PLTV/88888890/224/3221226395/index.m3u8",
+      "http://223.110.245.136/PLTV/3/224/3221227166/index.m3u8",
+      "http://223.110.245.165/ott.js.chinamobile.com/PLTV/3/224/3221227401/index.m3u8",
+      "http://112.46.105.20:8009/hls/503/index.m3u8"
+    ],
+    "CCTV-5+": [
+      "http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221225603/index.m3u8",
+      "http://183.251.61.207/PLTV/88888888/224/3221225821/index.m3u8",
+      "http://58.57.40.22:9901/tsfile/live/1005_1.m3u8"
+    ],
+    "CCTV-6": [
+      "http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221226010/index.m3u8",
+      "http://39.134.24.162/dbiptv.sn.chinamobile.com/PLTV/88888890/224/3221226393/index.m3u8",
+      "http://ivi.bupt.edu.cn/hls/cctv6hd.m3u8",
+      "http://58.57.40.22:9901/tsfile/live/1006_1.m3u8",
+      "http://223.110.242.130:6610/gitv/live1/G_CCTV-6-CQ/G_CCTV-6-CQ/"
+    ],
+    "CCTV-7": [
+      "http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221225733/index.m3u8",
+      "http://183.251.61.207/PLTV/88888888/224/3221225927/index.m3u8",
+      "http://112.46.105.20:8009/hls/504/index.m3u8"
+    ],
+    "CCTV-8": [
+      "http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221226008/index.m3u8",
+      "http://ivi.bupt.edu.cn/hls/cctv8hd.m3u8",
+      "http://112.46.105.20:8009/hls/8/index.m3u8",
+      "http://223.110.242.130:6610/gitv/live1/G_CCTV-8-CQ/G_CCTV-8-CQ/"
+    ],
+    "CCTV-9": [
+      "http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221225734/index.m3u8",
+      "http://183.251.61.207/PLTV/88888888/224/3221225929/index.m3u8",
+      "http://112.46.105.20:8009/hls/509/index.m3u8",
+      "http://180.97.247.27:8088/liveplay-kk.rtxapp.com/live/program/live/cctv9hd8m/8000000/mnf.m3u8"
+    ],
+    "CCTV-10": [
+      "http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221225730/index.m3u8",
+      "http://183.251.61.207/PLTV/88888888/224/3221225931/index.m3u8",
+      "http://58.57.40.22:9901/tsfile/live/1010_1.m3u8"
+    ],
+    "CCTV-11": [
+      "http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221225597/index.m3u8",
+      "http://ivi.bupt.edu.cn/hls/cctv11.m3u8",
+      "http://112.46.105.20:8009/hls/11/index.m3u8"
+    ],
+    "CCTV-12": [
+      "http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221225731/index.m3u8",
+      "http://183.251.61.207/PLTV/88888888/224/3221225932/index.m3u8",
+      "http://112.46.105.20:8009/hls/507/index.m3u8"
+    ],
+    "CCTV-13": [
+      "http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221226537/index.m3u8",
+      "http://39.134.24.162/dbiptv.sn.chinamobile.com/PLTV/88888890/224/3221226233/index.m3u8",
+      "http://183.252.176.10/PLTV/88888888/224/3221225817/index.m3u8",
+      "http://112.46.105.20:8009/hls/13/index.m3u8",
+      "http://223.110.242.130:6610/gitv/live1/G_CCTV-13-HQ/G_CCTV-13-HQ/"
+    ],
+    "CCTV-14": [
+      "http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221225732/index.m3u8",
+      "http://183.251.61.207/PLTV/88888888/224/3221225933/index.m3u8",
+      "http://58.57.40.22:9901/tsfile/live/1014_1.m3u8"
+    ],
+    "CCTV-15": [
+      "http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221225601/index.m3u8",
+      "http://183.251.61.207/PLTV/88888888/224/3221225818/index.m3u8",
+      "http://58.57.40.22:9901/tsfile/live/1015_1.m3u8"
+    ],
+    "CCTV-16": [
+      "http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221226100/index.m3u8",
+      "http://111.43.126.240:9003/hls/86/index.m3u8",
+      "http://223.110.235.9/ott.js.chinamobile.com/TVOD/3/224/3221228168/index.m3u8"
+    ],
+    "CCTV-17": [
+      "http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221225765/index.m3u8",
+      "http://111.43.126.240:9003/hls/30/index.m3u8"
+    ]
+  }
 }

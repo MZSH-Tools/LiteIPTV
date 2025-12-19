@@ -1,24 +1,33 @@
 # LiteIPTV
 
-> 🚧 **项目开发中**
->
-> 本项目正在积极开发中，功能尚未完善，欢迎关注。
-
----
-
 精简、稳定的 CCTV 直播源，专为国内用户设计。
 
 ## 前因后果
 
 因当前电视盒子广告横行，家中老人屡被蒙骗，随购买Apple TV欲取代电视盒子，可惜网络上IPTV源繁杂且不稳定，所以起了这个念头，我想为国内老人也为我家里老人写一个项目，这个项目很简单，综合多个上流源来并且通过比较保留最稳定的源，且只保留18个CCTV频道，希望天下老人都有一个快乐安逸的晚年。
 
+## 🙏 征集上游源
+
+**当前状态**：项目基础逻辑已完成，但缺乏有效的上游源。目前收录的上游源经过筛选后，仅有少量频道可用。
+
+**恳请帮助**：如果您有稳定好用的 IPTV 源，欢迎通过以下方式分享：
+
+- 提交 [Issue](https://github.com/MZSH-Tools/LiteIPTV/issues)
+- 提交 Pull Request 修改 `config.json`
+
+> 源的要求：包含 CCTV 频道、稳定可用、最好是 m3u/m3u8 格式
+
+感谢每一位贡献者！🙏
+
 ## 功能特点
 
 - **精简**：只保留 CCTV 央视频道（1-17 + 5+）
-- **高清**：只接受 1080p 源
-- **稳定**：模拟真实播放测速，连续下载多个 ts 分片评估稳定性
-- **IPv4**：仅提供 IPv4 源，兼容性更好
-- **自动更新**：每天凌晨自动检测，多轮测速取最优，仅在源变化时更新
+- **高清优先**：优先选择 1080p 源，使用 ffprobe 解析真实分辨率
+- **深度验证**：下载随机分片确保源真实可用，过滤纯音频源
+- **多源聚合**：23 个上游源 + 9 个运营商散装源，覆盖全面
+- **智能保留**：新源未覆盖时保留旧源，确保频道不丢失
+- **IPv4 优先**：仅提供 IPv4 源，兼容性更好
+- **自动更新**：每天凌晨自动检测，仅在源变化时更新
 
 ## 订阅地址
 
@@ -30,6 +39,8 @@
 | 线路2 | `https://gh-proxy.com/https://raw.githubusercontent.com/MZSH-Tools/LiteIPTV/main/iptv.m3u` |
 
 > 目前仅收录 CCTV 央视频道
+>
+> ⚠️ **地区限制**：部分源可能受地区限制无法观看。本项目以山西运城网络环境测试为主，其他地区用户可 Fork 后自行修改配置测试。
 
 ## 频道列表
 
@@ -62,11 +73,22 @@
 
 ### 环境要求
 
-- macOS（使用 launchd 守护进程）
-- Python 3.x
-- curl
-- ffprobe（用于检测分辨率，`brew install ffmpeg`）
+- macOS / Linux / Windows
+- miniconda（推荐使用 conda 创建虚拟环境，保证环境干净无污染）
+- ffprobe（用于检测分辨率，`brew install ffmpeg` 或 `apt install ffmpeg`）
 - git
+
+### 创建虚拟环境
+
+```bash
+# 方式一：从 environment.yml 创建（推荐）
+conda env create -f environment.yml
+
+# 方式二：手动创建
+conda create -n LiteIPTV python=3.12 -y
+conda activate LiteIPTV
+pip install -r requirements.txt
+```
 
 ### 配置文件
 
@@ -75,47 +97,46 @@
 ```json
 {
   "设置": {
-    "测速轮数": 3,
-    "测速间隔秒": 300,
+    "抓取重试次数": 3,
+    "抓取重试间隔秒": 3,
     "测速超时秒": 30,
     "最大并发数": 500,
-    "自动禁用失效源": true
+    "高清延迟阈值毫秒": 2000
   },
+  "黑名单": [
+    "example.com"
+  ],
   "上游源": [
-    {
-      "名称": "source-name",
-      "地址": "https://example.com/iptv.m3u",
-      "启用": true
-    }
-  ]
+    "https://example.com/iptv.m3u"
+  ],
+  "散装源": {
+    "CCTV-1": ["http://example.com/cctv1.m3u8"]
+  }
 }
 ```
 
 | 参数 | 说明 |
 |------|------|
-| 测速轮数 | 每个 URL 测试的次数 |
-| 测速间隔秒 | 每轮测速之间的等待时间 |
+| 抓取重试次数 | 抓取上游源失败时的重试次数 |
+| 抓取重试间隔秒 | 每次重试之间的等待时间 |
 | 测速超时秒 | 单次分片下载超时时间 |
 | 最大并发数 | 同时测速的最大 URL 数量 |
-| 自动禁用失效源 | 上游源所有频道失效时自动禁用 |
+| 高清延迟阈值毫秒 | 延迟超过此值时停止寻找 1080p，使用备选源 |
+| 黑名单 | 域名列表，匹配的源会被过滤 |
+| 散装源 | 手动添加的单频道源，按频道 ID 分组 |
 
 ### 快速验证
 
 ```bash
-# 方式一：使用测试脚本
-./test.sh
-
-# 方式二：直接运行（快速模式：1轮测速）
-QUICK_TEST=1 python3 main.py
-
-# 方式三：完整运行
-python3 main.py
+# 激活环境后运行
+conda activate LiteIPTV
+python main.py
 ```
 
-### 安装守护进程
+### 安装守护进程（macOS）
 
 1. 修改 `com.liteiptv.update.plist` 中的路径：
-   - `ProgramArguments`: Python 路径和 main.py 路径
+   - `ProgramArguments`: conda 环境的 Python 路径（如 `/opt/homebrew/Caskroom/miniconda/base/envs/LiteIPTV/bin/python3`）和 main.py 路径
    - `WorkingDirectory`: 项目目录
 
 2. 安装守护进程：
@@ -143,7 +164,7 @@ rm ~/Library/LaunchAgents/com.liteiptv.update.plist
 
 ### 运行模式
 
-launchd 定时调度，每天凌晨 3 点自动执行一次。程序执行完毕后退出，下次定时再启动。
+launchd 定时调度，每小时自动执行一次。程序执行完毕后退出，下次定时再启动。
 
 ## 许可证
 
